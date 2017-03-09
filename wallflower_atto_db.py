@@ -1,6 +1,6 @@
 #####################################################################################
 #
-#  Copyright (c) 2016 Eric Burger, Wallflower.cc
+#  Copyright (c) 2017 Eric Burger, Wallflower.cc
 #
 #  GNU Affero General Public License Version 3 (AGPLv3)
 #
@@ -27,22 +27,26 @@
 #
 #####################################################################################
 
-__version__ = '0.0.1'
+__version__ = '0.1.1'
 
 import json
 import sys
 import datetime
-import copy
 import re
-import uuid
+#import uuid
 
 from base.wallflower_packet import WallflowerPacket
 from base.wallflower_schema import getPythonType
 
-from wallflower_atto_models import Network, Object, Stream, createPointsTable
-
+from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.sql import select
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.schema import CreateTable, DropTable
+
+Base = declarative_base()
+
+from wallflower_atto_models import Network, Object, Stream, PointsTable
 
 class WallflowerDB:
     
@@ -59,6 +63,15 @@ class WallflowerDB:
     response = None
       
     db = None
+    db_uri = None
+    engine = None
+    
+    
+    def init(self,db_uri):
+        self.db_uri = db_uri
+        self.engine = create_engine(db_uri, convert_unicode=True)
+        Base.metadata.create_all(bind=self.engine)
+    
     
     '''
     Print Messages
@@ -326,10 +339,12 @@ class WallflowerDB:
                 }
             ]
             '''
+            # Generate SQLAlchemy statement
             network_details = json.dumps( create_network_request['network-details'] )
             create_network = Network(network_id, network_details)
-            self.db.session.add(create_network)
-            self.db.session.commit()
+            statement = create_network.__table__.insert().values(create_network.dict())
+            # Execute
+            self.engine.execute( statement ).close()
             
             created = True
             self.debug( "Network "+network_id+" Created" )
@@ -345,8 +360,6 @@ class WallflowerDB:
             self.db_message['network-code'] = 400
             self.debug( "Error: Network "+network_id+" Not Created" )
             self.debug( err )
-            self.db.session.rollback()
-            
         except:
             self.db_message['network-error'] =\
                 "Network "+network_id+" Not Created"
@@ -380,10 +393,12 @@ class WallflowerDB:
                 }
             ]
             '''
+            # Generate SQLAlchemy statement
             object_details = json.dumps( create_object_request['object-details'] )
             create_object = Object(network_id, object_id, object_details)
-            self.db.session.add(create_object)
-            self.db.session.commit()
+            statement = create_object.__table__.insert().values(create_object.dict())
+            # Execute
+            self.engine.execute( statement ).close()
             
             created = True
             self.debug( "Object "+network_id+"."+object_id+" Created" )
@@ -398,9 +413,7 @@ class WallflowerDB:
                 "Object "+network_id+"."+object_id+" Not Created"
             self.db_message['object-code'] = 400
             self.debug( "Error: Object "+network_id+"."+object_id+" Not Created" )
-            self.debug( err )
-            self.db.session.rollback()
-            
+            self.debug( err )            
         except:
             self.db_message['object-error'] =\
                 "Object "+network_id+"."+object_id+" Not Created"
@@ -431,15 +444,18 @@ class WallflowerDB:
             
             points_details = create_stream_request['points-details']
             python_type = getPythonType( points_details['points-type']  )
-            
+            print 'Here'
             # Create SQLAlchemy table as needed
-            points_table = createPointsTable( 
+            points_table = PointsTable( 
                 table_name, 
                 python_type, 
                 points_details['points-length']
             )
-            points_table.create(self.db.engine, checkfirst=True)
-            self.db.session.commit()            
+            print points_table
+            statement = CreateTable(points_table)
+            print statement
+            # Execute
+            self.engine.execute( statement ).close()
             
             create_stream_request['stream-details']['created-at'] = at
             '''
@@ -453,12 +469,15 @@ class WallflowerDB:
                 }
             ]
             '''
+            # Generate SQLAlchemy statement
             stream_details = json.dumps( create_stream_request['stream-details'] )
             points_details = json.dumps( create_stream_request['points-details'] )
             create_stream = Stream(network_id, object_id, stream_id, stream_details, points_details)
-            self.db.session.add(create_stream)
-            self.db.session.commit()
-
+            statement = create_stream.__table__.insert().values(create_stream.dict())
+            # Execute
+            print statement
+            self.engine.execute( statement ).close()
+            
             created = True
             self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" Created" )
             self.db_message['stream-message'] =\
@@ -474,9 +493,7 @@ class WallflowerDB:
                 "Stream "+network_id+"."+object_id+"."+stream_id+" Not Created"
             self.db_message['stream-code'] = 400
             self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Created" )
-            self.debug( err )
-            self.db.session.rollback()
-    
+            self.debug( err )    
         except:
             # There was an error.
             self.db_message['stream-error'] =\
@@ -496,7 +513,12 @@ class WallflowerDB:
         
         try:
             # Check for network
-            net = Network.query.filter_by(network_id=network_id).one()
+            statement = select(['*']).\
+                where( Network.network_id == network_id ).\
+                limit(1).offset(0)
+            # Execute query
+            result = self.engine.execute( statement )
+            net = result.first() # Automatically closed
             if net is None:
                 self.db_message['network-error'] = "Network "+network_id+" Not Read"
                 self.db_message['network-code'] = 400
@@ -506,8 +528,14 @@ class WallflowerDB:
                 self.db_message['network-id'] = network_id
                 
                 # Check for objects
+                statement = select(['*']).\
+                    where( Object.network_id == network_id )
+                # Execute query
+                result = self.engine.execute( statement )
+                objects = result.fetchall()
+                result.close()
+                
                 self.db_message['objects'] = {}
-                objects = Object.query.filter_by(network_id=network_id).all()
                 if objects is not None:
                     for obj in objects:
                         object_id = obj.object_id
@@ -518,9 +546,14 @@ class WallflowerDB:
                             'streams': {}
                         }
                         
-                # Check for streams
-                streams = Stream.query.filter_by(
-                    network_id=network_id).all()
+                # Check for streams                    
+                statement = select(['*']).\
+                    where( Stream.network_id == network_id )
+                # Execute query
+                result = self.engine.execute( statement )
+                streams = result.fetchall()
+                result.close()
+                
                 if streams is not None:
                     for stm in streams:
                         object_id = stm.object_id
@@ -537,21 +570,35 @@ class WallflowerDB:
                         table_name = network_id+'.'+object_id+'.'+stream_id
                         python_type = getPythonType( points_details['points-type']  )
                         
-                        # Create SQLAlchemy table as needed
-                        points_table = createPointsTable( 
+                        # Get SQLAlchemy table as needed
+                        points_table = PointsTable( 
                             table_name, 
                             python_type, 
                             points_details['points-length']
                         )
-                        statement = select([points_table]).limit(5).order_by(points_table.c.timestamp.desc())
-                        points_records = self.db.session.execute(statement).fetchall()
+                        statement = select([points_table]).\
+                            limit(5).\
+                            order_by(points_table.c.timestamp.desc())
+                        print statement
+                        # Execute query
+                        result = self.engine.execute( statement )
+                        points_records = result.fetchall()
+                        result.close()
                         
                         points = []
                         for point in points_records:
                             if 0 == points_details['points-length']:
-                                points.append({'at':point[0].isoformat() + 'Z','value':point[1]})
+                                points.append({
+                                    'at':point['timestamp'].isoformat() + 'Z',
+                                    'value':point['value']
+                                })
                             else:
-                                points.append({'at':point[0].isoformat() + 'Z','value':point[1:]})
+                                values = {
+                                    'at':point['timestamp'].isoformat() + 'Z'
+                                }
+                                for i in range(points_details['points-length']):
+                                    values['value'+str(i)] = point['value'+str(i)]
+                                points.append( values )
                         self.db_message['objects'][object_id]['streams'][stream_id]['points'] = points
                 
                 read = True
@@ -583,9 +630,13 @@ class WallflowerDB:
         
         try:
             # Check for object
-            obj = Object.query.filter_by(
-                network_id=network_id,
-                object_id=object_id).one()
+            statement = select(['*']).\
+                where( Object.network_id == network_id ).\
+                where( Object.object_id == object_id ).\
+                limit(1).offset(0)
+            # Execute query
+            result = self.engine.execute( statement )
+            obj = result.first() # Automatically closed
             if obj is None:
                 self.db_message['object-error'] = "Object "+network_id+"."+object_id+" Not Read"
                 self.db_message['object-code'] = 400
@@ -594,11 +645,15 @@ class WallflowerDB:
                 self.db_message['object-details'] = json.loads( obj.object_details )
                 self.db_message['object-id'] = object_id
                 
-                # Check for streams
-                self.db_message['streams'] = {}
-                streams = Stream.query.filter_by(
-                    network_id=network_id,
-                    object_id=object_id).all()
+                # Check for streams                    
+                statement = select(['*']).\
+                    where( Stream.network_id == network_id ).\
+                    where( Stream.object_id == object_id )
+                # Execute query
+                result = self.engine.execute( statement )
+                streams = result.fetchall()
+                result.close()
+                
                 if streams is not None:
                     for stm in streams:
                         stream_id = stm.stream_id
@@ -614,21 +669,35 @@ class WallflowerDB:
                         table_name = network_id+'.'+object_id+'.'+stream_id
                         python_type = getPythonType( points_details['points-type']  )
                         
-                        # Create SQLAlchemy table as needed
-                        points_table = createPointsTable( 
+                        # Get SQLAlchemy table as needed
+                        points_table = PointsTable( 
                             table_name, 
                             python_type, 
                             points_details['points-length']
                         )
-                        statement = select([points_table]).limit(5).order_by(points_table.c.timestamp.desc())
-                        contents = self.db.session.execute(statement).fetchall()
+                        statement = select([points_table]).\
+                            limit(5).\
+                            order_by(points_table.c.timestamp.desc())
+                        
+                        # Execute query
+                        result = self.engine.execute( statement )
+                        points_records = result.fetchall()
+                        result.close()
                         
                         points = []
-                        for point in contents:
+                        for point in points_records:
                             if 0 == points_details['points-length']:
-                                points.append({'at':point[0].isoformat() + 'Z','value':point[1]})
+                                points.append({
+                                    'at':point['timestamp'].isoformat() + 'Z',
+                                    'value':point['value']
+                                })
                             else:
-                                points.append({'at':point[0].isoformat() + 'Z','value':point[1:]})
+                                values = {
+                                    'at':point['timestamp'].isoformat() + 'Z'
+                                }
+                                for i in range(points_details['points-length']):
+                                    values['value'+str(i)] = point['value'+str(i)]
+                                points.append( values )
                         self.db_message['streams'][stream_id]['points'] = points
                                 
                 self.db_message['object-message'] =\
@@ -661,12 +730,15 @@ class WallflowerDB:
         read = False
         
         try:
-            
             # Check for stream
-            stm = Stream.query.filter_by(
-                network_id=network_id,
-                object_id=object_id,
-                stream_id=stream_id).one()
+            statement = select(['*']).\
+                where( Stream.network_id == network_id ).\
+                where( Stream.object_id == object_id ).\
+                where( Stream.stream_id == stream_id ).\
+                limit(1).offset(0)
+            # Execute query
+            result = self.engine.execute( statement )
+            stm = result.first() # Automatically closed
             if stm is None:
                 self.db_message['stream-error'] = \
                     "Stream "+network_id+"."+object_id+"."+stream_id+" Not Read"
@@ -683,21 +755,33 @@ class WallflowerDB:
                 table_name = network_id+'.'+object_id+'.'+stream_id
                 python_type = getPythonType( points_details['points-type']  )
                 
-                # Create SQLAlchemy table as needed
-                points_table = createPointsTable( 
+                # Get SQLAlchemy table as needed
+                points_table = PointsTable( 
                     table_name, 
                     python_type, 
                     points_details['points-length']
                 )
                 statement = select([points_table]).limit(5).order_by(points_table.c.timestamp.desc())
-                contents = self.db.session.execute(statement).fetchall()
+
+                # Execute query
+                result = self.engine.execute( statement )
+                points_records = result.fetchall()
+                result.close()
                 
                 points = []
-                for point in contents:
+                for point in points_records:
                     if 0 == points_details['points-length']:
-                        points.append({'at':point[0].isoformat() + 'Z','value':point[1]})
+                        points.append({
+                            'at':point['timestamp'].isoformat() + 'Z',
+                            'value':point['value']
+                        })
                     else:
-                        points.append({'at':point[0].isoformat() + 'Z','value':point[1:]})
+                        values = {
+                            'at':point['timestamp'].isoformat() + 'Z'
+                        }
+                        for i in range(points_details['points-length']):
+                            values['value'+str(i)] = point['value'+str(i)]
+                        points.append( values )
                 self.db_message['points'] = points
                 
                 
@@ -728,12 +812,17 @@ class WallflowerDB:
     def readPoints(self,ids,read_points_request,at):
         network_id,object_id,stream_id = ids
         read = False
+        
         try:
             # Check for stream
-            stm = Stream.query.filter_by(
-                network_id=network_id,
-                object_id=object_id,
-                stream_id=stream_id).one()
+            statement = select(['*']).\
+                where( Stream.network_id == network_id ).\
+                where( Stream.object_id == object_id ).\
+                where( Stream.stream_id == stream_id ).\
+                limit(1).offset(0)
+            # Execute query
+            result = self.engine.execute( statement )
+            stm = result.first() # Automatically closed
             if stm is None:
                 self.db_message['points-error'] = \
                     "Points "+network_id+"."+object_id+"."+stream_id+".points Not Read"
@@ -748,21 +837,33 @@ class WallflowerDB:
                 table_name = network_id+'.'+object_id+'.'+stream_id
                 python_type = getPythonType( points_details['points-type']  )
                 
-                # Create SQLAlchemy table as needed
-                points_table = createPointsTable( 
+                # Get SQLAlchemy table as needed
+                points_table = PointsTable( 
                     table_name, 
                     python_type, 
                     points_details['points-length']
                 )
                 statement = select([points_table]).limit(100).order_by(points_table.c.timestamp.desc())
-                contents = self.db.session.execute(statement).fetchall()
+                
+                # Execute query
+                result = self.engine.execute( statement )
+                points_records = result.fetchall()
+                result.close()
                 
                 points = []
-                for point in contents:
+                for point in points_records:
                     if 0 == points_details['points-length']:
-                        points.append({'at':point[0].isoformat() + 'Z','value':point[1]})
+                        points.append({
+                            'at':point['timestamp'].isoformat() + 'Z',
+                            'value':point['value']
+                        })
                     else:
-                        points.append({'at':point[0].isoformat() + 'Z','value':point[1:]})
+                        values = {
+                            'at':point['timestamp'].isoformat() + 'Z'
+                        }
+                        for i in range(points_details['points-length']):
+                            values['value'+str(i)] = point['value'+str(i)]
+                        points.append( values )
                 self.db_message['points'] = points
                 
                 self.db_message['points-message'] =\
@@ -796,7 +897,12 @@ class WallflowerDB:
         
         try:
             # Check for network
-            net = Network.query.filter_by(network_id=network_id).one()
+            statement = select(['*']).\
+                where( Network.network_id == network_id ).\
+                limit(1).offset(0)
+            # Execute query
+            result = self.engine.execute( statement )
+            net = result.first() # Automatically closed
             if net is None:
                 self.db_message['network-error'] = "Network "+network_id+" Not Updated"
                 self.db_message['network-code'] = 400
@@ -807,13 +913,27 @@ class WallflowerDB:
                 update_network_request['network-details']['updated-at'] = at
                 for key in update_network_request['network-details']:
                     network_details[key] = update_network_request['network-details'][key]
-                net.network_details = json.dumps( network_details )
-                #Network.update().where(network_id=network_id).values(network_details=net.network_details)
-                net.updated_at = datetime.datetime.strptime(
+                    
+                network_details = json.dumps( network_details )
+                updated_at = datetime.datetime.strptime(
                     at,
                     self.datetime_format_full
                 )
-                self.db.session.commit()
+                
+                # Make SQLAlchemy statement
+                statement = Network.__table__.update().\
+                    values(
+                        network_details=json.dumps(
+                            network_details
+                        ),
+                        updated_at=datetime.datetime.strptime(
+                            at,
+                            self.datetime_format_full
+                        )
+                    ).\
+                    where( Network.network_id == network_id )
+                # Make request
+                self.engine.execute( statement ).close()
                 
                 updated = True
                 self.db_message['network-message'] = "Network "+network_id+" Updated"
@@ -829,8 +949,6 @@ class WallflowerDB:
             self.db_message['network-code'] = 400
             self.debug( "Error: Network "+network_id+" Not Updated" )
             self.debug( err )
-            self.db.session.rollback()
-            
         except:
             self.db_message['network-error'] = "Network "+network_id+" Not Updated"
             self.db_message['network-code'] = 400
@@ -849,9 +967,13 @@ class WallflowerDB:
 
         try:
             # Check for object
-            obj = Object.query.filter_by(
-                network_id=network_id,
-                object_id=object_id).one()
+            statement = select(['*']).\
+                where( Object.network_id == network_id ).\
+                where( Object.object_id == object_id ).\
+                limit(1).offset(0)
+            # Execute query
+            result = self.engine.execute( statement )
+            obj = result.first() # Automatically closed
             if obj is None:
                 self.db_message['object-error'] = "Object "+network_id+"."+object_id+" Not Updated"
                 self.db_message['object-code'] = 400
@@ -863,13 +985,22 @@ class WallflowerDB:
                 for key in update_object_request['object-details']:
                     object_details[key] =\
                     update_object_request['object-details'][key]
-                obj.object_details = json.dumps( object_details )
-                #Object.update().where(network_id=network_id,object_id=object_id).values(object_details=obj.object_details)
-                obj.updated_at = datetime.datetime.strptime(
-                    at,
-                    self.datetime_format_full
-                )       
-                self.db.session.commit()
+                
+                # Make SQLAlchemy statement
+                statement = Object.__table__.update().\
+                    values(
+                        object_details=json.dumps(    
+                            object_details 
+                        ),
+                        updated_at=datetime.datetime.strptime(
+                            at,
+                            self.datetime_format_full
+                        )
+                    ).\
+                    where( Object.network_id == network_id ).\
+                    where( Object.object_id == object_id )
+                # Make request
+                self.engine.execute( statement ).close()
                 
                 updated = True
                 self.db_message['object-message'] =\
@@ -887,8 +1018,6 @@ class WallflowerDB:
             self.db_message['object-code'] = 400
             self.debug( "Error: Object "+network_id+"."+object_id+" Not Updated" )
             self.debug( err )
-            self.db.session.rollback()
-            
         except:
             self.db_message['object-error'] =\
                 "Object "+network_id+"."+object_id+" Not Updated"
@@ -907,10 +1036,14 @@ class WallflowerDB:
 
         try:
             # Check for stream
-            stm = Stream.query.filter_by(
-                network_id=network_id,
-                object_id=object_id,
-                stream_id=stream_id).one()
+            statement = select(['*']).\
+                where( Stream.network_id == network_id ).\
+                where( Stream.object_id == object_id ).\
+                where( Stream.stream_id == stream_id ).\
+                limit(1).offset(0)
+            # Execute query
+            result = self.engine.execute( statement )
+            stm = result.first() # Automatically closed
             if stm is None:
                 self.db_message['stream-error'] = \
                     "Stream "+network_id+"."+object_id+"."+stream_id+" Not Updated"
@@ -922,13 +1055,23 @@ class WallflowerDB:
                 update_stream_request['stream-details']['updated-at'] = at
                 for key in update_stream_request['stream-details']:
                     stream_details[key] = update_stream_request['stream-details'][key]
-                stm.stream_details = json.dumps( stream_details )
-                #Stream.update().where(network_id=network_id,object_id=object_id,stream_id=stream_id).values(stream_details=stm.stream_details)
-                stm.updated_at = datetime.datetime.strptime(
-                    at,
-                    self.datetime_format_full
-                )          
-                self.db.session.commit()
+                
+                # Make SQLAlchemy statement
+                statement = Stream.__table__.update().\
+                    values(
+                        stream_details=json.dumps(    
+                            stream_details 
+                        ),
+                        updated_at=datetime.datetime.strptime(
+                            at,
+                            self.datetime_format_full
+                        )
+                    ).\
+                    where( Stream.network_id == network_id ).\
+                    where( Stream.object_id == object_id ).\
+                    where( Stream.stream_id == stream_id )
+                # Make request
+                self.engine.execute( statement ).close()
                 
                 updated = True
                 self.db_message['stream-message'] =\
@@ -945,9 +1088,7 @@ class WallflowerDB:
                 "Stream "+network_id+"."+object_id+"."+stream_id+" Not Updated"
             self.db_message['stream-code'] = 400
             self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Updated" )
-            self.debug( err )
-            self.db.session.rollback()
-            
+            self.debug( err )            
         except:
             self.db_message['stream-error'] =\
                 "Stream "+network_id+"."+object_id+"."+stream_id+" Not Updated"
@@ -966,10 +1107,14 @@ class WallflowerDB:
         
         try:
             # Check for stream
-            stm = Stream.query.filter_by(
-                network_id=network_id,
-                object_id=object_id,
-                stream_id=stream_id).one()
+            statement = select(['*']).\
+                where( Stream.network_id == network_id ).\
+                where( Stream.object_id == object_id ).\
+                where( Stream.stream_id == stream_id ).\
+                limit(1).offset(0)
+            # Execute query
+            result = self.engine.execute( statement )
+            stm = result.first() # Automatically closed
             if stm is None:
                 # TODO stream-error or points-error
                 self.db_message['stream-error'] = \
@@ -977,7 +1122,7 @@ class WallflowerDB:
                 self.db_message['stream-code'] = 400
                 self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Found" )
             else:
-                
+                statements = []
                 points_details = json.loads( stm.points_details )
                 points_details['updated-at'] = at
                 python_type = getPythonType( points_details['points-type']  )
@@ -1059,19 +1204,21 @@ class WallflowerDB:
                     python_type = getPythonType( points_details['points-type']  )
                     
                     # Create SQLAlchemy table as needed
-                    points_table = createPointsTable( 
+                    points_table = PointsTable( 
                         table_name, 
                         python_type, 
                         points_details['points-length']
                     )
                     for i in range(len(new_points)):
                         if 0 == points_details['points-length']:
-                            statement = points_table.insert().values(
-                                timestamp = datetime.datetime.strptime(
-                                    new_points[i]['at'],
-                                    self.datetime_format_full
-                                ),
-                                value = new_points[i]['value']
+                            statements.append(
+                                points_table.insert().values(
+                                    timestamp = datetime.datetime.strptime(
+                                        new_points[i]['at'],
+                                        self.datetime_format_full
+                                    ),
+                                    value = new_points[i]['value']
+                                )
                             )
                         else:
                             kwargs = {
@@ -1082,19 +1229,18 @@ class WallflowerDB:
                             }
                             for j in range(points_details['points-length']):
                                 kwargs['value'+str(j)] = new_points[i]['value'][j]
-                            statement = points_table.insert().values(**kwargs)
+                            statements.append( points_table.insert().values(**kwargs) )
                                 
                          # TODO: Check Lists
-                        self.db.session.execute(statement)
                     
                     # Set current value
                     new_points = sorted(new_points, key=lambda k: k['at'])
                     if stm.points_current is None:
-                        stm.points_current = json.dumps( new_points[-1] )
+                        points_current = json.dumps( new_points[-1] )
                     else:
                         points_current = json.loads( stm.points_current )
                         if new_points[-1]['at'] > points_current['at']:
-                            stm.points_current = json.dumps( new_points[-1] )
+                            points_current = json.dumps( new_points[-1] )
                     
                     # Update min and max
                     if len(new_points) > 0 and python_type in (int,long,float):
@@ -1113,41 +1259,58 @@ class WallflowerDB:
                         points_details['min-value'] = min_val
                         points_details['max-value'] = max_val
                     
-                        stm.points_details = json.dumps( points_details )
-                    
-                    # Commit Changes
-                    stm.updated_at = datetime.datetime.strptime(
-                        at,
-                        self.datetime_format_full
+                    # Make SQLAlchemy statement
+                    statements.append( Stream.__table__.update().\
+                        values(
+                            points_current=points_current,
+                            points_details=json.dumps(    
+                                points_details 
+                            ),
+                            updated_at=datetime.datetime.strptime(
+                                at,
+                                self.datetime_format_full
+                            )
+                        ).\
+                        where( Stream.network_id == network_id ).\
+                        where( Stream.object_id == object_id ).\
+                        where( Stream.stream_id == stream_id )
                     )
-                    self.db.session.commit()
                     
-                    updated = True
-                    
-                    self.db_message['points-message'] =\
-                        "Points "+network_id+"."+object_id+"."+stream_id+".points Updated"
-                    self.db_message['points-code'] = 200
-                    # Return only updated details
-                    self.db_message['points'] = the_points_update
-                    self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Updated" )
-            
-        except OperationalError, err:
-            self.db_message['points-error'] =\
-                "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated"
-            self.db_message['points-code'] = 400
-            self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated" )
-            self.debug( err )
-            self.db.session.rollback()
-            
+                    # Make request(s)
+                    connection = self.engine.connect()
+                    trans = connection.begin()
+                    try:
+                        for each in statements:
+                            connection.execute( each )
+                        trans.commit()
+                        
+                        updated = True
+                        
+                        self.db_message['points-message'] =\
+                            "Points "+network_id+"."+object_id+"."+stream_id+".points Updated"
+                        self.db_message['points-code'] = 200
+                        # Return only updated details
+                        self.db_message['points'] = the_points_update
+                        self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Updated" )
+                
+                    except OperationalError, err:
+                        self.db_message['points-error'] =\
+                            "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated"
+                        self.db_message['points-code'] = 400
+                        self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated" )
+                        self.debug( err )
+                        trans.rollback()
+                        
+                    # Close connection
+                    connection.close()
         except:
             self.db_message['points-error'] =\
                 "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated"
             self.db_message['points-code'] = 400
             self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated" )
             self.debug( "Unexpected error (10):"+str(sys.exc_info()) )
-            
+        
         return updated
-
 
     '''
     Delete network. 
@@ -1286,8 +1449,8 @@ class WallflowerDB:
                 python_type = int
                 points_length = 0
                 
-                # Create SQLAlchemy table as needed
-                points_table = createPointsTable( 
+                # Get SQLAlchemy table as needed
+                points_table = PointsTable( 
                     table_name, 
                     python_type, 
                     points_length
@@ -1340,7 +1503,7 @@ class WallflowerDB:
             points_length = 0
             
             # Create SQLAlchemy table as needed
-            points_table = createPointsTable( 
+            points_table = PointsTable( 
                 table_name, 
                 python_type, 
                 points_length
@@ -1504,8 +1667,8 @@ class WallflowerDB:
                 python_type = getPythonType( points_details['points-type']  )
                 points_length = points_details['points-length'] 
                 
-                # Create SQLAlchemy table as needed
-                points_table = createPointsTable( 
+                # Get SQLAlchemy table as needed
+                points_table = PointsTable( 
                     table_name, 
                     python_type, 
                     points_length
@@ -1589,7 +1752,13 @@ class WallflowerDB:
     '''
     def networkExists(self,ids):
         network_id = ids[0]
-        network_record = Network.query.filter_by(network_id=network_id).first()
+        # Generate SQLAlchemy query statement
+        statement = select(['*']).\
+            where( Network.network_id == network_id ).\
+            limit(1).offset(0)
+        # Execute query
+        result = self.engine.execute( statement )
+        network_record = result.first() # Automatically closed
         if network_record is None:
             self.debug( "Network "+network_id+" Not Found" )
             return False, None
@@ -1602,7 +1771,14 @@ class WallflowerDB:
     '''
     def objectExists(self,ids):
         network_id,object_id = ids
-        object_record = Object.query.filter_by(network_id=network_id,object_id=object_id).first()
+        # Generate SQLAlchemy query statement
+        statement = select(['*']).\
+            where( Object.network_id == network_id).\
+            where( Object.object_id == object_id ).\
+            limit(1).offset(0)
+        # Execute query
+        result = self.engine.execute( statement )
+        object_record = result.first() # Automatically closed
         if object_record is None:
             self.debug( "Object "+network_id+"."+object_id+" Not Found" )
             return False, None
@@ -1615,7 +1791,15 @@ class WallflowerDB:
     '''
     def streamExists(self,ids):
         network_id,object_id,stream_id = ids
-        stream_record = Stream.query.filter_by(network_id=network_id,object_id=object_id,stream_id=stream_id).first()
+        # Generate SQLAlchemy query statement
+        statement = select(['*']).\
+            where( Stream.network_id == network_id ).\
+            where( Stream.object_id == object_id ).\
+            where( Stream.stream_id == stream_id ).\
+            limit(1).offset(0)
+        # Execute query
+        result = self.engine.execute( statement )
+        stream_record = result.first() # Automatically closed
         if stream_record is None:
             self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" Not Found" )
             return False, None

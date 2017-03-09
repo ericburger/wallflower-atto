@@ -1,6 +1,6 @@
 #####################################################################################
 #
-#  Copyright (c) 2016 Eric Burger, Wallflower.cc
+#  Copyright (c) 2017 Eric Burger, Wallflower.cc
 #
 #  GNU Affero General Public License Version 3 (AGPLv3)
 #
@@ -27,12 +27,11 @@
 #
 #####################################################################################
 
-__version__ = '0.0.1'
+__version__ = '0.1.1'
 
 import json
 
 from flask import Flask, request, jsonify, make_response, send_from_directory, render_template
-from wallflower_atto_models import db
 from wallflower_atto_db import WallflowerDB
 
 #import re
@@ -41,9 +40,7 @@ import datetime
 # Load config
 config = {
     'network-id': 'local',
-    'enable_ws': False,
     'http_port': 5000,
-    'ws_port': 5050,
     'database': {
         'name': 'wallflower_db',
         'type': 'sqlite'
@@ -55,41 +52,32 @@ try:
         wallflower_config = json.load(f)
         config.update( wallflower_config )
 except:
-    print( "Invalid wallflower_config.json file" )
+    print( "\nInvalid wallflower_config.json file\n" )
 
 app = Flask(__name__)
+# Create database connection object
+atto_db = WallflowerDB()
 
 if config['database']['type'] == 'sqlite':
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///'+config['database']['name']+'.sqlite'    
+    print( "Database Type: SQLite" )
+    db_uri = 'sqlite:///'+config['database']['name']+'.sqlite'    
+    atto_db.init( db_uri )
 elif config['database']['type'] == 'postgresql':
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'postgres://'+config['database']['user']+':'+config['database']['password']+'@'+config['database']['host']+':'+str(config['database']['port'])+'/'+config['database']['database']
+    print( "Database Type: PostgreSQL" )
+    db_uri = 'postgres://'+config['database']['user']+':'+config['database']['password']+'@'+config['database']['host']+':'+str(config['database']['port'])+'/'+config['database']['database']
+    atto_db.init( db_uri )
 elif config['database']['type'] == 'postgresql-heroku':
+    print( "Database Type: Heroku PostgreSQL" )
     import os
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.environ["DATABASE_URL"]
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    db_uri = os.environ["DATABASE_URL"]
+    atto_db.init( db_uri )
 
-# Create database connection object
-db.init_app(app)
-atto_db = WallflowerDB()
-atto_db.db = db
-
-# Initialize db with Flask app context   
-# Note: current_app points to app               
-with app.app_context():
-    # Create database and tables
-    #db.drop_all() 
-    db.create_all()
 
 # Routes
 # Route index/dashboard html file
 @app.route('/', methods=['GET'])
 def root():
-    # Return WebSocket or non-WebSocket Interface
-    data = {}
-    data['enable_ws'] = False
-    if config['enable_ws']:
-        data['enable_ws'] = True
-    return render_template('atto/index.html', data=data)
+    return render_template('atto/index.html')
 
 # Route static font files
 @app.route('/fonts/<path:filename>')

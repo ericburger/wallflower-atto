@@ -1,6 +1,6 @@
 #####################################################################################
 #
-#  Copyright (c) 2016 Eric Burger, Wallflower.cc
+#  Copyright (c) 2017 Eric Burger, Wallflower.cc
 #
 #  GNU Affero General Public License Version 3 (AGPLv3)
 #
@@ -27,28 +27,22 @@
 #
 #####################################################################################
 
-__version__ = '0.0.1'
+__version__ = '0.1.1'
 
-import sqlite3
 import json
-import sys
 import datetime
-import copy
-import re
-import uuid
-from base.wallflower_packet import WallflowerPacket
-from base.wallflower_schema import getPythonType
+#import uuid
+from sqlalchemy import Column, Integer, Float, String, Boolean, Table, DateTime
 
-from flask.ext.sqlalchemy import SQLAlchemy
+from wallflower_atto_db import Base
 
-db = SQLAlchemy()
-        
-class Network(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    network_id = db.Column(db.String(80), unique=True)
-    network_details = db.Column(db.String(1000))
-    created_at = db.Column(db.DateTime())
-    updated_at = db.Column(db.DateTime())
+class Network(Base):
+    __tablename__ = 'networks'
+    id = Column(Integer(), primary_key=True)
+    network_id = Column(String(80), unique=True)
+    network_details = Column(String(1000))
+    created_at = Column(DateTime())
+    updated_at = Column(DateTime())
     
     def __init__(self, network_id, network_details):
         self.network_id = network_id
@@ -58,7 +52,7 @@ class Network(db.Model):
         
     def __repr__(self):
         return '<Network %r>' % self.network_id
-        
+    
     def loadFromRow( self, row ):
         self.id = row[0]
         self.network_id = row[1]
@@ -72,13 +66,14 @@ class Network(db.Model):
     def network_details_dict(self):
         return json.loads( self.network_details )
         
-class Object(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    network_id = db.Column(db.String(80), unique=False)
-    object_id = db.Column(db.String(80), unique=False)
-    object_details = db.Column(db.String(1000))
-    created_at = db.Column(db.DateTime())
-    updated_at = db.Column(db.DateTime())
+class Object(Base):
+    __tablename__ = 'objects'
+    id = Column(Integer(), primary_key=True)
+    network_id = Column(String(80), unique=False)
+    object_id = Column(String(80), unique=False)
+    object_details = Column(String(1000))
+    created_at = Column(DateTime())
+    updated_at = Column(DateTime())
     
     def __init__(self, network_id, object_id, object_details):
         self.network_id = network_id
@@ -101,16 +96,17 @@ class Object(db.Model):
     def dict(self):
         return dict((col, getattr(self, col)) for col in self.__table__.columns.keys())
         
-class Stream(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    network_id = db.Column(db.String(80), unique=False)
-    object_id = db.Column(db.String(80), unique=False)
-    stream_id = db.Column(db.String(80), unique=False)
-    stream_details = db.Column(db.String(1000))
-    points_details = db.Column(db.String(1000))
-    points_current = db.Column(db.String(1000))
-    created_at = db.Column(db.DateTime())
-    updated_at = db.Column(db.DateTime())
+class Stream(Base):
+    __tablename__ = 'streams'
+    id = Column(Integer(), primary_key=True)
+    network_id = Column(String(80), unique=False)
+    object_id = Column(String(80), unique=False)
+    stream_id = Column(String(80), unique=False)
+    stream_details = Column(String(1000))
+    points_details = Column(String(1000))
+    points_current = Column(String(1000))
+    created_at = Column(DateTime())
+    updated_at = Column(DateTime())
     
     def __init__(self, network_id, object_id, stream_id, stream_details, points_details):
         self.network_id = network_id
@@ -140,56 +136,51 @@ class Stream(db.Model):
         
         
 def createPointsTable( table_name, data_type, data_length=0 ):
-    metadata = db.MetaData()
-    '''
-    timestamp date
-    users = Table('users', metadata,
-         Column('timestamp', Integer, primary_key=True),
-         Column('name', String),
-         Column('fullname', String),
-    )
-    *(Column(wordCol, Unicode(255)) for wordCol in wordColumns))
-    '''
     if 0 == data_length:
         if data_type is basestring:
-            return db.Table(table_name, metadata,
-                 db.Column('timestamp', db.DateTime(), primary_key=True),
-                 db.Column('value', db.String(255))
+            return Table(table_name, Base.metadata,
+                 Column('timestamp', DateTime(), primary_key=True),
+                 Column('value', String(255))
             )
         elif data_type is int:
-            return db.Table(table_name, metadata,
-                 db.Column('timestamp', db.DateTime(), primary_key=True),
-                 db.Column('value', db.Integer())
+            return Table(table_name, Base.metadata,
+                 Column('timestamp', DateTime(), primary_key=True),
+                 Column('value', Integer())
             )
         elif data_type is float:
-            return db.Table(table_name, metadata,
-                 db.Column('timestamp', db.DateTime(), primary_key=True),
-                 db.Column('value', db.Float())
+            return Table(table_name, Base.metadata,
+                 Column('timestamp', DateTime(), primary_key=True),
+                 Column('value', Float())
             )
         elif data_type is bool:
-            return db.Table(table_name, metadata,
-                 db.Column('timestamp', db.DateTime(), primary_key=True),
-                 db.Column('value', db.Boolean())
+            return Table(table_name, Base.metadata,
+                 Column('timestamp', DateTime(), primary_key=True),
+                 Column('value', Boolean())
             )
     else:
         if data_type is basestring:
-            return db.Table(table_name, metadata,
-                 db.Column('timestamp', db.DateTime(), primary_key=True),
-                *(db.Column('value'+str(i), db.String(255)) for i in range(data_length))
+            return Table(table_name, Base.metadata,
+                 Column('timestamp', DateTime(), primary_key=True),
+                *(Column('value'+str(i), String(255)) for i in range(data_length))
             )
         elif data_type is int:
-            return db.Table(table_name, metadata,
-                 db.Column('timestamp', db.DateTime(), primary_key=True),
-                *(db.Column('value'+str(i), db.Integer()) for i in range(data_length))
+            return Table(table_name, Base.metadata,
+                 Column('timestamp', DateTime(), primary_key=True),
+                *(Column('value'+str(i), Integer()) for i in range(data_length))
             )
         elif data_type is float:
-            return db.Table(table_name, metadata,
-                 db.Column('timestamp', db.DateTime(), primary_key=True),
-                *(db.Column('value'+str(i), db.Float()) for i in range(data_length))
+            return Table(table_name, Base.metadata,
+                 Column('timestamp', DateTime(), primary_key=True),
+                *(Column('value'+str(i), Float()) for i in range(data_length))
             )
         elif data_type is bool:
-            return db.Table(table_name, metadata,
-                 db.Column('timestamp', db.DateTime(), primary_key=True),
-                *(db.Column('value'+str(i), db.Boolean()) for i in range(data_length))
+            return Table(table_name, Base.metadata,
+                 Column('timestamp', DateTime(), primary_key=True),
+                *(Column('value'+str(i), Boolean()) for i in range(data_length))
             )
-        
+
+def getPointsTable( table_name, data_type, data_length=0 ):
+    if table_name in Base.metadata.tables:
+        return Base.metadata.tables[table_name]
+    else:
+        return createPointsTable( table_name, data_type, data_length=0 )

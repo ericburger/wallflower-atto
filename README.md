@@ -32,7 +32,7 @@ The Wallflower.Atto server can be deployed to the Heroku cloud application platf
 ```sh
 $ git clone https://github.com/wallflowercc/wallflower-atto
 ```
- - You now have your own copy of the Wallflower.Atto server which you can edit from the Cloud9 workspace. Edit the wallflower_config.json file to select the Heroku  PostgreSQL database type by changing
+ - You now have your own copy of the Wallflower.Atto server which you can edit from the Cloud9 workspace. Edit the wallflower_config.json file to select the Heroku PostgreSQL database type by changing
 
  ```sh
  "type": "sqlite",
@@ -41,6 +41,7 @@ $ git clone https://github.com/wallflowercc/wallflower-atto
  ```sh
  "type": "postgresql-heroku",
  ```
+ - Save the changes to the wallflower_config.json file before continuing.
  
 ##### Connect To Heroku
  - Next we will login to Heroku from Cloud9.

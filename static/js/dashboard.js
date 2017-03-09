@@ -1513,6 +1513,9 @@ function doCreateObject( response ){
     'object-details': response['object-details'],
     'streams': {}
   }
+  if( !network.hasOwnProperty("objects") ){
+    network['objects'] = {};
+  }
   network['objects'][response['object-id']] = new_object;
   
   // Reload the create stream form
@@ -1539,6 +1542,9 @@ function doCreateStream( response ){
     'stream-details': response['stream-details'],
     'points-details': response['points-details'],
     'points': []
+  }
+  if( !network['objects'][response["object-id"]].hasOwnProperty("streams") ){
+    network['objects'][response["object-id"]]['streams'] = {};
   }
   network['objects'][response["object-id"]]['streams'][response['stream-id']] = new_stream;
   
