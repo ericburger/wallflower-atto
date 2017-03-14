@@ -1390,6 +1390,8 @@ $(document).ready(function(){
         
         // Clear the form
         this_form.trigger("reset");
+        // Reload the form
+        loadDeletePointsForms();
       },
       error : function(jqXHR, textStatus, errorThrown){
         var this_form = $("form#form-view-points");

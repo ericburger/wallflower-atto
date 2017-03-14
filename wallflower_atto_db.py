@@ -46,7 +46,7 @@ from sqlalchemy.schema import CreateTable, DropTable
 
 Base = declarative_base()
 
-from wallflower_atto_models import Network, Object, Stream, PointsTable
+from wallflower_atto_models import Network, Object, Stream, PointsTable, getPointsTable
 
 class WallflowerDB:
     
@@ -69,10 +69,13 @@ class WallflowerDB:
     
     def init(self,db_uri):
         self.db_uri = db_uri
-        self.engine = create_engine(db_uri, convert_unicode=True)
+        
+        self.engine = create_engine(db_uri)
+        #CreateTable(Network.__table__)
+        #CreateTable(Object.__table__)
+        #CreateTable(Stream.__table__)
         Base.metadata.create_all(bind=self.engine)
-    
-    
+
     '''
     Print Messages
     '''
@@ -124,7 +127,7 @@ class WallflowerDB:
             return self.db_message
         
         # Check if necessary elements/parents do or do not exist
-        do_continue = self.doChecks(request_type,request_level,ids)
+        do_continue, records = self.doChecks(request_type,request_level,ids)
         if not do_continue:
             if request_level+'-code' not in self.db_message:
                 self.db_message.update({
@@ -134,7 +137,7 @@ class WallflowerDB:
             return self.db_message
         
         # Finally, do request
-        done = self.doRequest(the_request,request_type,request_level,ids,at)
+        done = self.doRequest(the_request,request_type,request_level,ids,records,at)
         if not done:
             if request_level+'-code' not in self.db_message:
                 self.db_message.update({
@@ -150,18 +153,19 @@ class WallflowerDB:
     """
     def doChecks(self, request_type, request_level, ids ):
         the_id = '.'.join(ids)
-         
+        records = []
         if request_level == 'network':
             network_id = ids[0]
             # Try loading the network
             network_exists, net = self.networkExists((network_id,))
+            records.append(net)
             if network_exists and request_type in ['create']:
                 # Already exists
                 self.db_message[request_level+'-message'] =\
                     request_level.title()+' '+the_id+' already exists. No changes made.'
                 self.db_message[request_level+'-code'] = 304
                 self.debug( self.db_message[request_level+'-message'] )
-                return False
+                return False, None
             elif not network_exists and request_type in ['read','update','delete','search']:
                 # Does not exist.
                 self.db_message[request_level+'-error'] =\
@@ -169,12 +173,13 @@ class WallflowerDB:
                     request_type+' request cannot be completed.'
                 self.db_message[request_level+'-code'] = 404
                 self.debug( self.db_message[request_level+'-error'] )
-                return False
+                return False, None
                 
         elif request_level == 'object':
             network_id,object_id = ids
             # Try loading the network
             network_exists, net = self.networkExists((network_id,))
+            records.append(net)
             if not network_exists:
                 # Does not exist.
                 self.db_message['network-error'] =\
@@ -182,17 +187,18 @@ class WallflowerDB:
                     request_level+' '+request_type+' request cannot be completed.'
                 self.db_message['network-code'] = 404
                 self.debug( self.db_message['network-error'] )
-                return False
+                return False, None
             
             # Check for the object
             object_exists, obj = self.objectExists(ids)
+            records.append(obj)
             if object_exists and request_type in ['create']:
                 # Already exists
                 self.db_message[request_level+'-message'] =\
                     request_level.title()+' '+the_id+' already exists. No changes made.'
                 self.db_message[request_level+'-code'] = 304
                 self.debug( self.db_message[request_level+'-message'] )
-                return False
+                return False, None
             elif not object_exists and request_type in ['read','update','delete','search']:
                 # Does not exist.
                 self.db_message[request_level+'-error'] =\
@@ -200,12 +206,13 @@ class WallflowerDB:
                     request_type+' request cannot be completed.'
                 self.db_message[request_level+'-code'] = 404
                 self.debug( self.db_message[request_level+'-error'] )
-                return False
+                return False, None
             
         elif request_level == 'stream' or request_level == 'points':
             network_id,object_id,stream_id = ids
             # Try loading the network
             network_exists, net = self.networkExists((network_id,))
+            records.append(net)
             if not network_exists:
                 # Does not exist.
                 self.db_message['network-error'] =\
@@ -213,10 +220,11 @@ class WallflowerDB:
                     request_level+' '+request_type+' request cannot be completed.'
                 self.db_message['network-code'] = 404
                 self.debug( self.db_message['network-error'] )
-                return False
+                return False, None
             
             # Check for the object
             object_exists, obj = self.objectExists((network_id,object_id))
+            records.append(obj)
             if not object_exists:
                 # Does not exist.
                 self.db_message['object-error'] =\
@@ -224,17 +232,18 @@ class WallflowerDB:
                     request_level+' '+request_type+' request cannot be completed.'
                 self.db_message['object-code'] = 404
                 self.debug( self.db_message['object-error'] )
-                return False
+                return False, None
             
             # Check for the stream
             stream_exists, stm = self.streamExists(ids)
+            records.append(stm)
             if stream_exists and request_type in ['create']:
                 # Already exists
                 self.db_message[request_level+'-message'] =\
                     request_level.title()+' '+the_id+' already exists. No changes made.'
                 self.db_message[request_level+'-code'] = 304
                 self.debug( self.db_message[request_level+'-message'] )
-                return False
+                return False, None
             elif not stream_exists and request_type in ['read','update','delete','search']:
                 # Does not exist.
                 self.db_message[request_level+'-error'] =\
@@ -242,57 +251,57 @@ class WallflowerDB:
                     request_type+' request cannot be completed.'
                 self.db_message[request_level+'-code'] = 404
                 self.debug( self.db_message[request_level+'-error'] )
-                return False
+                return False, None
         
-        return True
+        return True, records
         
 
     '''
     Route requests
     '''
-    def doRequest(self,request,request_type,request_level,ids,at):
+    def doRequest(self,request,request_type,request_level,ids,records,at):
         if request_level == 'network':
             if request_type == 'create':
-                return self.createNetwork(ids,request,at)
+                return self.createNetwork(ids,request,records,at)
             elif request_type == 'read':
-                return self.readNetwork(ids,request,at)
+                return self.readNetwork(ids,request,records,at)
             elif request_type == 'update':
-                return self.updateNetwork(ids,request,at)
+                return self.updateNetwork(ids,request,records,at)
             elif request_type == 'delete':
-                return self.deleteNetwork(ids,request,at)
+                return self.deleteNetwork(ids,request,records,at)
             elif request_type == 'search':
-                return self.searchNetwork(ids,request,at)
+                return self.searchNetwork(ids,request,records,at)
         elif request_level == 'object':
             if request_type == 'create':
-                return self.createObject(ids,request,at)
+                return self.createObject(ids,request,records,at)
             elif request_type == 'read':
-                return self.readObject(ids,request,at)
+                return self.readObject(ids,request,records,at)
             elif request_type == 'update':
-                return self.updateObject(ids,request,at)
+                return self.updateObject(ids,request,records,at)
             elif request_type == 'delete':
-                return self.deleteObject(ids,request,at)
+                return self.deleteObject(ids,request,records,at)
             elif request_type == 'search':
-                return self.searchObject(ids,request,at)
+                return self.searchObject(ids,request,records,at)
         elif request_level == 'stream':
             if request_type == 'create':
-                return self.createStream(ids,request,at)
+                return self.createStream(ids,request,records,at)
             elif request_type == 'read':
-                return self.readStream(ids,request,at)
+                return self.readStream(ids,request,records,at)
             elif request_type == 'update':
-                return self.updateStream(ids,request,at)
+                return self.updateStream(ids,request,records,at)
             elif request_type == 'delete':
-                return self.deleteStream(ids,request,at)
+                return self.deleteStream(ids,request,records,at)
             elif request_type == 'search':
-                return self.searchStream(ids,request,at)
+                return self.searchStream(ids,request,records,at)
         elif request_level == 'points':
             if request_type == 'read':
-                return self.readPoints(ids,request,at)
+                return self.readPoints(ids,request,records,at)
             elif request_type == 'update':
-                return self.updatePoints(ids,request,at)
+                return self.updatePoints(ids,request,records,at)
             elif request_type == 'delete':
-                return self.deletePoints(ids,request,at)
+                return self.deletePoints(ids,request,records,at)
             elif request_type == 'search':
-                return self.searchPoints(ids,request,at)
+                return self.searchPoints(ids,request,records,at)
                 
         return False
                 
@@ -315,7 +324,7 @@ class WallflowerDB:
     Network must not already exist. 
     Assumes network info well formatted.
     '''
-    def createNetwork(self,ids,create_network_request,at):
+    def createNetwork(self,ids,create_network_request,records,at):
         network_id = ids[0]
         created = False
         
@@ -375,7 +384,7 @@ class WallflowerDB:
     Object must not already exist. Network must exist. 
     Assume object info well formatted.
     '''
-    def createObject(self,ids,create_object_request,at):
+    def createObject(self,ids,create_object_request,records,at):
         network_id,object_id = ids
         created = False
         
@@ -429,7 +438,7 @@ class WallflowerDB:
     Stream must not already exist. Network and Object must exist.
     Assume stream info well formated.
     '''
-    def createStream(self,ids,create_stream_request,at):
+    def createStream(self,ids,create_stream_request,records,at):
         network_id,object_id,stream_id = ids
         created = False
         
@@ -444,16 +453,16 @@ class WallflowerDB:
             
             points_details = create_stream_request['points-details']
             python_type = getPythonType( points_details['points-type']  )
-            print 'Here'
+            
             # Create SQLAlchemy table as needed
             points_table = PointsTable( 
                 table_name, 
                 python_type, 
                 points_details['points-length']
             )
-            print points_table
+            
             statement = CreateTable(points_table)
-            print statement
+            
             # Execute
             self.engine.execute( statement ).close()
             
@@ -475,7 +484,6 @@ class WallflowerDB:
             create_stream = Stream(network_id, object_id, stream_id, stream_details, points_details)
             statement = create_stream.__table__.insert().values(create_stream.dict())
             # Execute
-            print statement
             self.engine.execute( statement ).close()
             
             created = True
@@ -507,104 +515,93 @@ class WallflowerDB:
     '''
     Read Network
     '''
-    def readNetwork(self,ids,read_network_request,at):
+    def readNetwork(self,ids,read_network_request,records,at):
         network_id = ids[0]
+        net = records[0]
         read = False
         
         try:
-            # Check for network
+            self.db_message['network-details'] = json.loads( net.network_details )
+            self.db_message['network-id'] = network_id
+            
+            # Check for objects
             statement = select(['*']).\
-                where( Network.network_id == network_id ).\
-                limit(1).offset(0)
+                where( Object.network_id == network_id )
             # Execute query
             result = self.engine.execute( statement )
-            net = result.first() # Automatically closed
-            if net is None:
-                self.db_message['network-error'] = "Network "+network_id+" Not Read"
-                self.db_message['network-code'] = 400
-                self.debug( "Error: Network "+network_id+" Not Read" )
-            else:
-                self.db_message['network-details'] = json.loads( net.network_details )
-                self.db_message['network-id'] = network_id
-                
-                # Check for objects
-                statement = select(['*']).\
-                    where( Object.network_id == network_id )
-                # Execute query
-                result = self.engine.execute( statement )
-                objects = result.fetchall()
-                result.close()
-                
-                self.db_message['objects'] = {}
-                if objects is not None:
-                    for obj in objects:
-                        object_id = obj.object_id
-                        object_details = json.loads( obj.object_details )
-                        self.db_message['objects'][object_id] = {
-                            'object-id': object_id,
-                            'object-details': object_details,
-                            'streams': {}
-                        }
-                        
-                # Check for streams                    
-                statement = select(['*']).\
-                    where( Stream.network_id == network_id )
-                # Execute query
-                result = self.engine.execute( statement )
-                streams = result.fetchall()
-                result.close()
-                
-                if streams is not None:
-                    for stm in streams:
-                        object_id = stm.object_id
-                        stream_id = stm.stream_id
-                        stream_details = json.loads( stm.stream_details )
-                        points_details = json.loads( stm.points_details )
-                        self.db_message['objects'][object_id]['streams'][stream_id] = {
-                            'stream-id': stream_id,
-                            'stream-details': stream_details,
-                            'points-details': points_details,
-                        }
-                        
-                        # Get points
-                        table_name = network_id+'.'+object_id+'.'+stream_id
-                        python_type = getPythonType( points_details['points-type']  )
-                        
-                        # Get SQLAlchemy table as needed
-                        points_table = PointsTable( 
-                            table_name, 
-                            python_type, 
-                            points_details['points-length']
-                        )
-                        statement = select([points_table]).\
-                            limit(5).\
-                            order_by(points_table.c.timestamp.desc())
-                        print statement
-                        # Execute query
-                        result = self.engine.execute( statement )
-                        points_records = result.fetchall()
-                        result.close()
-                        
-                        points = []
-                        for point in points_records:
-                            if 0 == points_details['points-length']:
-                                points.append({
-                                    'at':point['timestamp'].isoformat() + 'Z',
-                                    'value':point['value']
-                                })
-                            else:
-                                values = {
-                                    'at':point['timestamp'].isoformat() + 'Z'
-                                }
-                                for i in range(points_details['points-length']):
-                                    values['value'+str(i)] = point['value'+str(i)]
-                                points.append( values )
-                        self.db_message['objects'][object_id]['streams'][stream_id]['points'] = points
-                
-                read = True
-                self.db_message['network-message'] = "Network "+network_id+" Read"
-                self.db_message['network-code'] = 200
-                self.debug( "Network "+network_id+" Read" )
+            objects = result.fetchall()
+            result.close()
+            
+            self.db_message['objects'] = {}
+            if objects is not None:
+                for obj in objects:
+                    object_id = obj.object_id
+                    object_details = json.loads( obj.object_details )
+                    self.db_message['objects'][object_id] = {
+                        'object-id': object_id,
+                        'object-details': object_details,
+                        'streams': {}
+                    }
+                    
+            # Check for streams                    
+            statement = select(['*']).\
+                where( Stream.network_id == network_id )
+            # Execute query
+            result = self.engine.execute( statement )
+            streams = result.fetchall()
+            result.close()
+            
+            if streams is not None:
+                for stm in streams:
+                    object_id = stm.object_id
+                    stream_id = stm.stream_id
+                    stream_details = json.loads( stm.stream_details )
+                    points_details = json.loads( stm.points_details )
+                    self.db_message['objects'][object_id]['streams'][stream_id] = {
+                        'stream-id': stream_id,
+                        'stream-details': stream_details,
+                        'points-details': points_details,
+                    }
+                    
+                    # Get points
+                    table_name = network_id+'.'+object_id+'.'+stream_id
+                    python_type = getPythonType( points_details['points-type']  )
+                    
+                    # Get SQLAlchemy table as needed
+                    points_table = getPointsTable( 
+                        table_name, 
+                        python_type, 
+                        points_details['points-length']
+                    )
+                    statement = select([points_table]).\
+                        limit(5).\
+                        order_by(points_table.c.timestamp.desc())
+                    
+                    # Execute query
+                    result = self.engine.execute( statement )
+                    points_records = result.fetchall()
+                    result.close()
+                    
+                    points = []
+                    for point in points_records:
+                        if 0 == points_details['points-length']:
+                            points.append({
+                                'at':point['timestamp'].isoformat() + 'Z',
+                                'value':point['value']
+                            })
+                        else:
+                            values = {
+                                'at':point['timestamp'].isoformat() + 'Z'
+                            }
+                            for i in range(points_details['points-length']):
+                                values['value'+str(i)] = point['value'+str(i)]
+                            points.append( values )
+                    self.db_message['objects'][object_id]['streams'][stream_id]['points'] = points
+            
+            read = True
+            self.db_message['network-message'] = "Network "+network_id+" Read"
+            self.db_message['network-code'] = 200
+            self.debug( "Network "+network_id+" Read" )
             
         except OperationalError, err:
             self.db_message['network-error'] = "Network "+network_id+" Not Read"
@@ -624,87 +621,76 @@ class WallflowerDB:
     '''
     Read Object
     '''
-    def readObject(self,ids,read_object_request,at):
+    def readObject(self,ids,read_object_request,records,at):
         network_id,object_id = ids
+        net,obj = records
         read = False
         
         try:
-            # Check for object
+            self.db_message['object-details'] = json.loads( obj.object_details )
+            self.db_message['object-id'] = object_id
+            
+            # Check for streams                    
             statement = select(['*']).\
-                where( Object.network_id == network_id ).\
-                where( Object.object_id == object_id ).\
-                limit(1).offset(0)
+                where( Stream.network_id == network_id ).\
+                where( Stream.object_id == object_id )
             # Execute query
             result = self.engine.execute( statement )
-            obj = result.first() # Automatically closed
-            if obj is None:
-                self.db_message['object-error'] = "Object "+network_id+"."+object_id+" Not Read"
-                self.db_message['object-code'] = 400
-                self.debug( "Error: Object "+network_id+"."+object_id+" Not Read" )
-            else:
-                self.db_message['object-details'] = json.loads( obj.object_details )
-                self.db_message['object-id'] = object_id
-                
-                # Check for streams                    
-                statement = select(['*']).\
-                    where( Stream.network_id == network_id ).\
-                    where( Stream.object_id == object_id )
-                # Execute query
-                result = self.engine.execute( statement )
-                streams = result.fetchall()
-                result.close()
-                
-                if streams is not None:
-                    for stm in streams:
-                        stream_id = stm.stream_id
-                        stream_details = json.loads( stm.stream_details )
-                        points_details = json.loads( stm.points_details )
-                        self.db_message['streams'][stream_id] = {
-                            'stream-id': stream_id,
-                            'stream-details': stream_details,
-                            'points-details': points_details
-                        }
-                        
-                        # Get points
-                        table_name = network_id+'.'+object_id+'.'+stream_id
-                        python_type = getPythonType( points_details['points-type']  )
-                        
-                        # Get SQLAlchemy table as needed
-                        points_table = PointsTable( 
-                            table_name, 
-                            python_type, 
-                            points_details['points-length']
-                        )
-                        statement = select([points_table]).\
-                            limit(5).\
-                            order_by(points_table.c.timestamp.desc())
-                        
-                        # Execute query
-                        result = self.engine.execute( statement )
-                        points_records = result.fetchall()
-                        result.close()
-                        
-                        points = []
-                        for point in points_records:
-                            if 0 == points_details['points-length']:
-                                points.append({
-                                    'at':point['timestamp'].isoformat() + 'Z',
-                                    'value':point['value']
-                                })
-                            else:
-                                values = {
-                                    'at':point['timestamp'].isoformat() + 'Z'
-                                }
-                                for i in range(points_details['points-length']):
-                                    values['value'+str(i)] = point['value'+str(i)]
-                                points.append( values )
-                        self.db_message['streams'][stream_id]['points'] = points
-                                
-                self.db_message['object-message'] =\
-                    "Object "+network_id+"."+object_id+" Read"
-                self.db_message['object-code'] = 200
-                self.debug( "Object "+network_id+"."+object_id+" Read" )
-                read = True
+            streams = result.fetchall()
+            result.close()
+            
+            if streams is not None:
+                self.db_message['streams'] = {}
+                for stm in streams:
+                    stream_id = stm.stream_id
+                    stream_details = json.loads( stm.stream_details )
+                    points_details = json.loads( stm.points_details )
+                    self.db_message['streams'][stream_id] = {
+                        'stream-id': stream_id,
+                        'stream-details': stream_details,
+                        'points-details': points_details
+                    }
+                    
+                    # Get points
+                    table_name = network_id+'.'+object_id+'.'+stream_id
+                    python_type = getPythonType( points_details['points-type']  )
+                    
+                    # Get SQLAlchemy table as needed
+                    points_table = getPointsTable( 
+                        table_name, 
+                        python_type, 
+                        points_details['points-length']
+                    )
+                    statement = select([points_table]).\
+                        limit(5).\
+                        order_by(points_table.c.timestamp.desc())
+                    
+                    # Execute query
+                    result = self.engine.execute( statement )
+                    points_records = result.fetchall()
+                    result.close()
+                    
+                    points = []
+                    for point in points_records:
+                        if 0 == points_details['points-length']:
+                            points.append({
+                                'at':point['timestamp'].isoformat() + 'Z',
+                                'value':point['value']
+                            })
+                        else:
+                            values = {
+                                'at':point['timestamp'].isoformat() + 'Z'
+                            }
+                            for i in range(points_details['points-length']):
+                                values['value'+str(i)] = point['value'+str(i)]
+                            points.append( values )
+                    self.db_message['streams'][stream_id]['points'] = points
+                            
+            self.db_message['object-message'] =\
+                "Object "+network_id+"."+object_id+" Read"
+            self.db_message['object-code'] = 200
+            self.debug( "Object "+network_id+"."+object_id+" Read" )
+            read = True
             
         except OperationalError, err:
             self.db_message['object-error'] =\
@@ -725,71 +711,57 @@ class WallflowerDB:
     '''
     Read stream.
     '''
-    def readStream(self,ids,read_stream_request,at):
+    def readStream(self,ids,read_stream_request,records,at):
         network_id,object_id,stream_id = ids
+        net,obj,stm = records
         read = False
         
         try:
-            # Check for stream
-            statement = select(['*']).\
-                where( Stream.network_id == network_id ).\
-                where( Stream.object_id == object_id ).\
-                where( Stream.stream_id == stream_id ).\
-                limit(1).offset(0)
+            stream_details = json.loads( stm.stream_details )
+            points_details = json.loads( stm.points_details )
+            self.db_message['stream-id'] = stream_id
+            self.db_message['stream-details'] = stream_details
+            self.db_message['points-details'] = points_details
+                        
+            # Get points
+            table_name = network_id+'.'+object_id+'.'+stream_id
+            python_type = getPythonType( points_details['points-type']  )
+            
+            # Get SQLAlchemy table as needed
+            points_table = getPointsTable( 
+                table_name, 
+                python_type, 
+                points_details['points-length']
+            )
+            statement = select([points_table]).limit(5).order_by(points_table.c.timestamp.desc())
+
             # Execute query
             result = self.engine.execute( statement )
-            stm = result.first() # Automatically closed
-            if stm is None:
-                self.db_message['stream-error'] = \
-                    "Stream "+network_id+"."+object_id+"."+stream_id+" Not Read"
-                self.db_message['stream-code'] = 400
-                self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Read" )
-            else:
-                stream_details = json.loads( stm.stream_details )
-                points_details = json.loads( stm.points_details )
-                self.db_message['stream-id'] = stream_id
-                self.db_message['stream-details'] = stream_details
-                self.db_message['points-details'] = points_details
-                            
-                # Get points
-                table_name = network_id+'.'+object_id+'.'+stream_id
-                python_type = getPythonType( points_details['points-type']  )
-                
-                # Get SQLAlchemy table as needed
-                points_table = PointsTable( 
-                    table_name, 
-                    python_type, 
-                    points_details['points-length']
-                )
-                statement = select([points_table]).limit(5).order_by(points_table.c.timestamp.desc())
-
-                # Execute query
-                result = self.engine.execute( statement )
-                points_records = result.fetchall()
-                result.close()
-                
-                points = []
-                for point in points_records:
-                    if 0 == points_details['points-length']:
-                        points.append({
-                            'at':point['timestamp'].isoformat() + 'Z',
-                            'value':point['value']
-                        })
-                    else:
-                        values = {
-                            'at':point['timestamp'].isoformat() + 'Z'
-                        }
-                        for i in range(points_details['points-length']):
-                            values['value'+str(i)] = point['value'+str(i)]
-                        points.append( values )
-                self.db_message['points'] = points
-                
-                
-                self.db_message['stream-message'] =\
-                    "Stream "+network_id+"."+object_id+"."+stream_id+" Read"
-                self.db_message['stream-code'] = 200
-                self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" Read" )
-                read = True
+            points_records = result.fetchall()
+            result.close()
+            
+            points = []
+            for point in points_records:
+                if 0 == points_details['points-length']:
+                    points.append({
+                        'at':point['timestamp'].isoformat() + 'Z',
+                        'value':point['value']
+                    })
+                else:
+                    values = {
+                        'at':point['timestamp'].isoformat() + 'Z'
+                    }
+                    for i in range(points_details['points-length']):
+                        values['value'+str(i)] = point['value'+str(i)]
+                    points.append( values )
+            self.db_message['points'] = points
+            
+            
+            self.db_message['stream-message'] =\
+                "Stream "+network_id+"."+object_id+"."+stream_id+" Read"
+            self.db_message['stream-code'] = 200
+            self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" Read" )
+            read = True
             
         except OperationalError, err:
             self.db_message['stream-error'] =\
@@ -809,68 +781,55 @@ class WallflowerDB:
     '''
     Read points from stream.
     '''
-    def readPoints(self,ids,read_points_request,at):
+    def readPoints(self,ids,read_points_request,records,at):
         network_id,object_id,stream_id = ids
+        net,obj,stm = records
         read = False
         
         try:
-            # Check for stream
-            statement = select(['*']).\
-                where( Stream.network_id == network_id ).\
-                where( Stream.object_id == object_id ).\
-                where( Stream.stream_id == stream_id ).\
-                limit(1).offset(0)
+            points_details = json.loads( stm.points_details )
+            self.db_message['stream-id'] = stream_id
+            self.db_message['points-details'] = points_details
+            
+            # Get points
+            table_name = network_id+'.'+object_id+'.'+stream_id
+            python_type = getPythonType( points_details['points-type']  )
+            
+            # Get SQLAlchemy table as needed
+            points_table = getPointsTable( 
+                table_name, 
+                python_type, 
+                points_details['points-length']
+            )
+            statement = select([points_table]).limit(100).\
+                order_by(points_table.c.timestamp.desc())
+            
             # Execute query
             result = self.engine.execute( statement )
-            stm = result.first() # Automatically closed
-            if stm is None:
-                self.db_message['points-error'] = \
-                    "Points "+network_id+"."+object_id+"."+stream_id+".points Not Read"
-                self.db_message['points-code'] = 400
-                self.debug( "Error: Points "+network_id+"."+object_id+"."+stream_id+".points Not Read" )
-            else:
-                points_details = json.loads( stm.points_details )
-                self.db_message['stream-id'] = stream_id
-                self.db_message['points-details'] = points_details
-                
-                # Get points
-                table_name = network_id+'.'+object_id+'.'+stream_id
-                python_type = getPythonType( points_details['points-type']  )
-                
-                # Get SQLAlchemy table as needed
-                points_table = PointsTable( 
-                    table_name, 
-                    python_type, 
-                    points_details['points-length']
-                )
-                statement = select([points_table]).limit(100).order_by(points_table.c.timestamp.desc())
-                
-                # Execute query
-                result = self.engine.execute( statement )
-                points_records = result.fetchall()
-                result.close()
-                
-                points = []
-                for point in points_records:
-                    if 0 == points_details['points-length']:
-                        points.append({
-                            'at':point['timestamp'].isoformat() + 'Z',
-                            'value':point['value']
-                        })
-                    else:
-                        values = {
-                            'at':point['timestamp'].isoformat() + 'Z'
-                        }
-                        for i in range(points_details['points-length']):
-                            values['value'+str(i)] = point['value'+str(i)]
-                        points.append( values )
-                self.db_message['points'] = points
-                
-                self.db_message['points-message'] =\
-                    "Points "+network_id+"."+object_id+"."+stream_id+".points Read"
-                self.db_message['points-code'] = 200
-                self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Read" )
-                read = True
+            points_records = result.fetchall()
+            result.close()
+            
+            points = []
+            for point in points_records:
+                if 0 == points_details['points-length']:
+                    points.append({
+                        'at':point['timestamp'].isoformat() + 'Z',
+                        'value':point['value']
+                    })
+                else:
+                    values = {
+                        'at':point['timestamp'].isoformat() + 'Z'
+                    }
+                    for i in range(points_details['points-length']):
+                        values['value'+str(i)] = point['value'+str(i)]
+                    points.append( values )
+            self.db_message['points'] = points
+            
+            self.db_message['points-message'] =\
+                "Points "+network_id+"."+object_id+"."+stream_id+".points Read"
+            self.db_message['points-code'] = 200
+            self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Read" )
+            read = True
             
         except OperationalError, err:
             self.db_message['points-error'] =\
@@ -891,58 +850,41 @@ class WallflowerDB:
     '''
     Update network. Assumes network info well formatted.
     '''
-    def updateNetwork(self,ids,update_network_request,at):
+    def updateNetwork(self,ids,update_network_request,records,at):
         network_id = ids[0]
+        net = records[0]
         updated = False
         
         try:
-            # Check for network
-            statement = select(['*']).\
-                where( Network.network_id == network_id ).\
-                limit(1).offset(0)
-            # Execute query
-            result = self.engine.execute( statement )
-            net = result.first() # Automatically closed
-            if net is None:
-                self.db_message['network-error'] = "Network "+network_id+" Not Updated"
-                self.db_message['network-code'] = 400
-                self.debug( "Error: Network "+network_id+" Not Updated" )
-            else:
-                # Update network
-                network_details = json.loads( net.network_details )
-                update_network_request['network-details']['updated-at'] = at
-                for key in update_network_request['network-details']:
-                    network_details[key] = update_network_request['network-details'][key]
-                    
-                network_details = json.dumps( network_details )
-                updated_at = datetime.datetime.strptime(
-                    at,
-                    self.datetime_format_full
-                )
-                
-                # Make SQLAlchemy statement
-                statement = Network.__table__.update().\
-                    values(
-                        network_details=json.dumps(
-                            network_details
-                        ),
-                        updated_at=datetime.datetime.strptime(
-                            at,
-                            self.datetime_format_full
-                        )
-                    ).\
-                    where( Network.network_id == network_id )
-                # Make request
-                self.engine.execute( statement ).close()
-                
-                updated = True
-                self.db_message['network-message'] = "Network "+network_id+" Updated"
-                self.db_message['network-code'] = 200
-                self.db_message['network-id'] = network_id
-                # Return only updated details
-                self.db_message['network-details'] =\
-                    update_network_request['network-details']
-                self.debug( "Network "+network_id+" Updated" )
+            # Update network
+            network_details = json.loads( net.network_details )
+            update_network_request['network-details']['updated-at'] = at
+            for key in update_network_request['network-details']:
+                network_details[key] = update_network_request['network-details'][key]
+            
+            # Make SQLAlchemy statement
+            statement = Network.__table__.update().\
+                values(
+                    network_details=json.dumps(
+                        network_details
+                    ),
+                    updated_at=datetime.datetime.strptime(
+                        at,
+                        self.datetime_format_full
+                    )
+                ).\
+                where( Network.network_id == network_id )
+            # Make request
+            self.engine.execute( statement ).close()
+            
+            updated = True
+            self.db_message['network-message'] = "Network "+network_id+" Updated"
+            self.db_message['network-code'] = 200
+            self.db_message['network-id'] = network_id
+            # Return only updated details
+            self.db_message['network-details'] =\
+                update_network_request['network-details']
+            self.debug( "Network "+network_id+" Updated" )
             
         except OperationalError, err:
             self.db_message['network-error'] = "Network "+network_id+" Not Updated"
@@ -961,56 +903,44 @@ class WallflowerDB:
     '''
     Update object. Assumes object info well formatted.
     '''
-    def updateObject(self,ids,update_object_request,at):
+    def updateObject(self,ids,update_object_request,records,at):
         network_id,object_id = ids
+        net,obj = records
         updated = False
 
         try:
-            # Check for object
-            statement = select(['*']).\
+            # Update object
+            object_details = json.loads( obj.object_details )
+            update_object_request['object-details']['updated-at'] = at
+            for key in update_object_request['object-details']:
+                object_details[key] =\
+                update_object_request['object-details'][key]
+            
+            # Make SQLAlchemy statement
+            statement = Object.__table__.update().\
+                values(
+                    object_details=json.dumps(    
+                        object_details 
+                    ),
+                    updated_at=datetime.datetime.strptime(
+                        at,
+                        self.datetime_format_full
+                    )
+                ).\
                 where( Object.network_id == network_id ).\
-                where( Object.object_id == object_id ).\
-                limit(1).offset(0)
-            # Execute query
-            result = self.engine.execute( statement )
-            obj = result.first() # Automatically closed
-            if obj is None:
-                self.db_message['object-error'] = "Object "+network_id+"."+object_id+" Not Updated"
-                self.db_message['object-code'] = 400
-                self.debug( "Error: Object "+network_id+"."+object_id+" Not Updated" )
-            else:
-                # Update object
-                object_details = json.loads( obj.object_details )
-                update_object_request['object-details']['updated-at'] = at
-                for key in update_object_request['object-details']:
-                    object_details[key] =\
-                    update_object_request['object-details'][key]
-                
-                # Make SQLAlchemy statement
-                statement = Object.__table__.update().\
-                    values(
-                        object_details=json.dumps(    
-                            object_details 
-                        ),
-                        updated_at=datetime.datetime.strptime(
-                            at,
-                            self.datetime_format_full
-                        )
-                    ).\
-                    where( Object.network_id == network_id ).\
-                    where( Object.object_id == object_id )
-                # Make request
-                self.engine.execute( statement ).close()
-                
-                updated = True
-                self.db_message['object-message'] =\
-                    "Object "+network_id+"."+object_id+" Updated"
-                self.db_message['object-code'] = 200
-                self.db_message['object-id'] = object_id
-                # Return only updated details
-                self.db_message['object-details'] =\
-                    update_object_request['object-details']
-                self.debug( "Object "+network_id+"."+object_id+" Updated" )
+                where( Object.object_id == object_id )
+            # Make request
+            self.engine.execute( statement ).close()
+            
+            updated = True
+            self.db_message['object-message'] =\
+                "Object "+network_id+"."+object_id+" Updated"
+            self.db_message['object-code'] = 200
+            self.db_message['object-id'] = object_id
+            # Return only updated details
+            self.db_message['object-details'] =\
+                update_object_request['object-details']
+            self.debug( "Object "+network_id+"."+object_id+" Updated" )
             
         except OperationalError, err:
             self.db_message['object-error'] =\
@@ -1030,58 +960,44 @@ class WallflowerDB:
     '''
     Update stream. Assumes points-details and points well formatted.
     '''
-    def updateStream(self,ids,update_stream_request,at):
+    def updateStream(self,ids,update_stream_request,records,at):
         network_id,object_id,stream_id = ids
+        net,obj,stm = records
         updated = False
 
         try:
-            # Check for stream
-            statement = select(['*']).\
+            # Update stream
+            stream_details = json.loads( stm.stream_details )
+            update_stream_request['stream-details']['updated-at'] = at
+            for key in update_stream_request['stream-details']:
+                stream_details[key] = update_stream_request['stream-details'][key]
+            
+            # Make SQLAlchemy statement
+            statement = Stream.__table__.update().\
+                values(
+                    stream_details=json.dumps(    
+                        stream_details 
+                    ),
+                    updated_at=datetime.datetime.strptime(
+                        at,
+                        self.datetime_format_full
+                    )
+                ).\
                 where( Stream.network_id == network_id ).\
                 where( Stream.object_id == object_id ).\
-                where( Stream.stream_id == stream_id ).\
-                limit(1).offset(0)
-            # Execute query
-            result = self.engine.execute( statement )
-            stm = result.first() # Automatically closed
-            if stm is None:
-                self.db_message['stream-error'] = \
-                    "Stream "+network_id+"."+object_id+"."+stream_id+" Not Updated"
-                self.db_message['stream-code'] = 400
-                self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Updated" )
-            else:
-                # Update stream
-                stream_details = json.loads( stm.stream_details )
-                update_stream_request['stream-details']['updated-at'] = at
-                for key in update_stream_request['stream-details']:
-                    stream_details[key] = update_stream_request['stream-details'][key]
-                
-                # Make SQLAlchemy statement
-                statement = Stream.__table__.update().\
-                    values(
-                        stream_details=json.dumps(    
-                            stream_details 
-                        ),
-                        updated_at=datetime.datetime.strptime(
-                            at,
-                            self.datetime_format_full
-                        )
-                    ).\
-                    where( Stream.network_id == network_id ).\
-                    where( Stream.object_id == object_id ).\
-                    where( Stream.stream_id == stream_id )
-                # Make request
-                self.engine.execute( statement ).close()
-                
-                updated = True
-                self.db_message['stream-message'] =\
-                    "Stream "+network_id+"."+object_id+"."+stream_id+" Updated"
-                self.db_message['stream-code'] = 200
-                # Return only updated details
-                self.db_message['stream-id'] = stream_id
-                self.db_message['stream-details'] =\
-                    update_stream_request['stream-details']            
-                self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" Updated" )
+                where( Stream.stream_id == stream_id )
+            # Make request
+            self.engine.execute( statement ).close()
+            
+            updated = True
+            self.db_message['stream-message'] =\
+                "Stream "+network_id+"."+object_id+"."+stream_id+" Updated"
+            self.db_message['stream-code'] = 200
+            # Return only updated details
+            self.db_message['stream-id'] = stream_id
+            self.db_message['stream-details'] =\
+                update_stream_request['stream-details']            
+            self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" Updated" )
                 
         except OperationalError, err:
             self.db_message['stream-error'] =\
@@ -1101,208 +1017,193 @@ class WallflowerDB:
     '''
     Update stream. Assumes points_details and points well formatted.
     '''
-    def updatePoints(self,ids,update_points_request,at):
+    def updatePoints(self,ids,update_points_request,records,at):
         network_id,object_id,stream_id = ids
+        net,obj,stm = records
         updated = False
         
         try:
-            # Check for stream
-            statement = select(['*']).\
-                where( Stream.network_id == network_id ).\
-                where( Stream.object_id == object_id ).\
-                where( Stream.stream_id == stream_id ).\
-                limit(1).offset(0)
-            # Execute query
-            result = self.engine.execute( statement )
-            stm = result.first() # Automatically closed
-            if stm is None:
-                # TODO stream-error or points-error
-                self.db_message['stream-error'] = \
-                    "Stream "+network_id+"."+object_id+"."+stream_id+" Not Found"
-                self.db_message['stream-code'] = 400
-                self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Found" )
-            else:
-                statements = []
-                points_details = json.loads( stm.points_details )
-                points_details['updated-at'] = at
-                python_type = getPythonType( points_details['points-type']  )
+            statements = []
+            points_details = json.loads( stm.points_details )
+            points_details['updated-at'] = at
+            python_type = getPythonType( points_details['points-type']  )
 
-                # The new points                
-                the_points_update = update_points_request['points']
+            # The new points                
+            the_points_update = update_points_request['points']
+            
+            continue_update = True
+            new_values = []
+            new_index = []
+            new_points = []
+            for point in the_points_update:                 
+                # Update database table                
+                point_at = at
+                if 'at' in point:
+                    point_at = point['at']
+                point_value = point['value']
                 
-                continue_update = True
-                new_values = []
-                new_index = []
-                new_points = []
-                for point in the_points_update:                 
-                    # Update database table                
-                    point_at = at
-                    if 'at' in point:
-                        point_at = point['at']
-                    point_value = point['value']
-                    
-                    found_type = None
-                    try:
-                        found_type = type(point_value)
-                        if points_details['points-length'] > 0:
-                            assert isinstance(point_value,(list,tuple))
-                            for i in range(len(point_value)):
-                                found_type = type(point_value[i])
-                                try:
-                                    assert isinstance(point_value[i],python_type)
-                                except:
-                                    # TODO: Generate Warning
-                                    if python_type is basestring:
-                                        point_value[i] = basestring( point_value[i] )
-                                    elif python_type == int:
-                                        point_value[i] = int( point_value[i] )
-                                    elif python_type == long:
-                                        point_value[i] = long( point_value[i] )
-                                    elif python_type == float:
-                                        point_value[i] = float( point_value[i] )
-                                    elif python_type == bool:
-                                        point_value[i] = bool( point_value[i] )
-                        else:
-                            found_type = type(point_value)
+                found_type = None
+                try:
+                    found_type = type(point_value)
+                    if points_details['points-length'] > 0:
+                        assert isinstance(point_value,(list,tuple))
+                        for i in range(len(point_value)):
+                            found_type = type(point_value[i])
                             try:
-                                assert isinstance(point_value,python_type)
+                                assert isinstance(point_value[i],python_type)
                             except:
                                 # TODO: Generate Warning
                                 if python_type is basestring:
-                                    point_value = basestring( point_value )
+                                    point_value[i] = basestring( point_value[i] )
                                 elif python_type == int:
-                                    point_value = int( point_value )
+                                    point_value[i] = int( point_value[i] )
                                 elif python_type == long:
-                                    point_value = long( point_value )
+                                    point_value[i] = long( point_value[i] )
                                 elif python_type == float:
-                                    point_value = float( point_value )
+                                    point_value[i] = float( point_value[i] )
                                 elif python_type == bool:
-                                    point_value = bool( point_value )
-                    except:
-                        self.db_message['points-error'] =\
-                            "Stream "+network_id+"."+object_id+"."+\
-                            stream_id+" Point Value Not "+str(python_type)
-                        self.db_message['points-code'] = 406
-                        self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+ \
-                            " Point Value Should Be "+str(python_type)+\
-                            ", Not "+str(found_type) )
-                        continue_update = False
-                        break
-                        
-                    new_values.append( point_value )
-                    new_index.append( point_at )
-                    new_points.append({
-                        'value': point_value,
-                        'at': point_at
-                    })
-                
-                # Check if point parsing was successful
-                # Currently, does not support partial success
-                if continue_update:
-                    # Update points
-                    table_name = network_id+'.'+object_id+'.'+stream_id
-                    python_type = getPythonType( points_details['points-type']  )
-                    
-                    # Create SQLAlchemy table as needed
-                    points_table = PointsTable( 
-                        table_name, 
-                        python_type, 
-                        points_details['points-length']
-                    )
-                    for i in range(len(new_points)):
-                        if 0 == points_details['points-length']:
-                            statements.append(
-                                points_table.insert().values(
-                                    timestamp = datetime.datetime.strptime(
-                                        new_points[i]['at'],
-                                        self.datetime_format_full
-                                    ),
-                                    value = new_points[i]['value']
-                                )
-                            )
-                        else:
-                            kwargs = {
-                                'timestamp': datetime.datetime.strptime(
-                                    new_points[i]['at'], 
-                                    self.datetime_format_full
-                                )
-                            }
-                            for j in range(points_details['points-length']):
-                                kwargs['value'+str(j)] = new_points[i]['value'][j]
-                            statements.append( points_table.insert().values(**kwargs) )
-                                
-                         # TODO: Check Lists
-                    
-                    # Set current value
-                    new_points = sorted(new_points, key=lambda k: k['at'])
-                    if stm.points_current is None:
-                        points_current = json.dumps( new_points[-1] )
+                                    point_value[i] = bool( point_value[i] )
                     else:
-                        points_current = json.loads( stm.points_current )
-                        if new_points[-1]['at'] > points_current['at']:
-                            points_current = json.dumps( new_points[-1] )
+                        found_type = type(point_value)
+                        try:
+                            assert isinstance(point_value,python_type)
+                        except:
+                            # TODO: Generate Warning
+                            if python_type is basestring:
+                                point_value = basestring( point_value )
+                            elif python_type == int:
+                                point_value = int( point_value )
+                            elif python_type == long:
+                                point_value = long( point_value )
+                            elif python_type == float:
+                                point_value = float( point_value )
+                            elif python_type == bool:
+                                point_value = bool( point_value )
+                except:
+                    self.db_message['points-error'] =\
+                        "Stream "+network_id+"."+object_id+"."+\
+                        stream_id+" Point Value Not "+str(python_type)
+                    self.db_message['points-code'] = 406
+                    self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+ \
+                        " Point Value Should Be "+str(python_type)+\
+                        ", Not "+str(found_type) )
+                    continue_update = False
+                    break
                     
-                    # Update min and max
-                    if len(new_points) > 0 and python_type in (int,long,float):
-                        min_val = new_points[0]['value']
-                        max_val = new_points[0]['value']
-                        if all(k in points_details for k in ("min-value","max-value")):
-                            min_val = points_details['min-value']
-                            max_val = points_details['max-value']
-                            
-                        for i in range(len(new_points)):
-                            if new_points[i]['value'] > max_val:
-                                max_val = new_points[i]['value']
-                            elif new_points[i]['value'] < min_val:
-                                min_val = new_points[i]['value']
-                        
-                        points_details['min-value'] = min_val
-                        points_details['max-value'] = max_val
-                    
-                    # Make SQLAlchemy statement
-                    statements.append( Stream.__table__.update().\
-                        values(
-                            points_current=points_current,
-                            points_details=json.dumps(    
-                                points_details 
-                            ),
-                            updated_at=datetime.datetime.strptime(
-                                at,
+                new_values.append( point_value )
+                new_index.append( point_at )
+                new_points.append({
+                    'value': point_value,
+                    'at': point_at
+                })
+            
+            # Check if point parsing was successful
+            # Currently, does not support partial success
+            if continue_update:
+                # Update points
+                table_name = network_id+'.'+object_id+'.'+stream_id
+                python_type = getPythonType( points_details['points-type']  )
+                
+                # Get SQLAlchemy table as needed
+                points_table = getPointsTable( 
+                    table_name, 
+                    python_type, 
+                    points_details['points-length']
+                )
+                for i in range(len(new_points)):
+                    if 0 == points_details['points-length']:
+                        statements.append(
+                            points_table.insert().values(
+                                timestamp = datetime.datetime.strptime(
+                                    new_points[i]['at'],
+                                    self.datetime_format_full
+                                ),
+                                value = new_points[i]['value']
+                            )
+                        )
+                    else:
+                        kwargs = {
+                            'timestamp': datetime.datetime.strptime(
+                                new_points[i]['at'], 
                                 self.datetime_format_full
                             )
-                        ).\
-                        where( Stream.network_id == network_id ).\
-                        where( Stream.object_id == object_id ).\
-                        where( Stream.stream_id == stream_id )
-                    )
-                    
-                    # Make request(s)
-                    connection = self.engine.connect()
-                    trans = connection.begin()
-                    try:
-                        for each in statements:
-                            connection.execute( each )
-                        trans.commit()
-                        
-                        updated = True
-                        
-                        self.db_message['points-message'] =\
-                            "Points "+network_id+"."+object_id+"."+stream_id+".points Updated"
-                        self.db_message['points-code'] = 200
-                        # Return only updated details
-                        self.db_message['points'] = the_points_update
-                        self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Updated" )
+                        }
+                        for j in range(points_details['points-length']):
+                            kwargs['value'+str(j)] = new_points[i]['value'][j]
+                        statements.append( points_table.insert().values(**kwargs) )
+                            
+                     # TODO: Check Lists
                 
-                    except OperationalError, err:
-                        self.db_message['points-error'] =\
-                            "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated"
-                        self.db_message['points-code'] = 400
-                        self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated" )
-                        self.debug( err )
-                        trans.rollback()
+                # Set current value
+                new_points = sorted(new_points, key=lambda k: k['at'])
+                if stm.points_current is None:
+                    points_current = json.dumps( new_points[-1] )
+                else:
+                    points_current = json.loads( stm.points_current )
+                    if new_points[-1]['at'] > points_current['at']:
+                        points_current = json.dumps( new_points[-1] )
+                
+                # Update min and max
+                if len(new_points) > 0 and python_type in (int,long,float):
+                    min_val = new_points[0]['value']
+                    max_val = new_points[0]['value']
+                    if all(k in points_details for k in ("min-value","max-value")):
+                        min_val = points_details['min-value']
+                        max_val = points_details['max-value']
                         
-                    # Close connection
-                    connection.close()
+                    for i in range(len(new_points)):
+                        if new_points[i]['value'] > max_val:
+                            max_val = new_points[i]['value']
+                        elif new_points[i]['value'] < min_val:
+                            min_val = new_points[i]['value']
+                    
+                    points_details['min-value'] = min_val
+                    points_details['max-value'] = max_val
+                
+                # Make SQLAlchemy statement
+                statements.append( Stream.__table__.update().\
+                    values(
+                        points_current=points_current,
+                        points_details=json.dumps(    
+                            points_details 
+                        ),
+                        updated_at=datetime.datetime.strptime(
+                            at,
+                            self.datetime_format_full
+                        )
+                    ).\
+                    where( Stream.network_id == network_id ).\
+                    where( Stream.object_id == object_id ).\
+                    where( Stream.stream_id == stream_id )
+                )
+                
+                # Make request(s)
+                connection = self.engine.connect()
+                trans = connection.begin()
+                try:
+                    for each in statements:
+                        connection.execute( each )
+                    trans.commit()
+                    
+                    updated = True
+                    
+                    self.db_message['points-message'] =\
+                        "Points "+network_id+"."+object_id+"."+stream_id+".points Updated"
+                    self.db_message['points-code'] = 200
+                    # Return only updated details
+                    self.db_message['points'] = the_points_update
+                    self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Updated" )
+            
+                except OperationalError, err:
+                    self.db_message['points-error'] =\
+                        "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated"
+                    self.db_message['points-code'] = 400
+                    self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated" )
+                    self.debug( err )
+                    trans.rollback()
+                    
+                # Close connection
+                connection.close()
         except:
             self.db_message['points-error'] =\
                 "Points "+network_id+"."+object_id+"."+stream_id+".points Not Updated"
@@ -1314,37 +1215,36 @@ class WallflowerDB:
 
     '''
     Delete network. 
-    TODO: It is unnecessary to check for network before deleting
     '''
-    def deleteNetwork(self,ids,delete_network_request,at,update_message=True):
+    def deleteNetwork(self,ids,delete_network_request,records,at,update_message=True):
         network_id = ids[0]
+        net = records[0]
         deleted = False        
 
         try:
-            # Check for network
-            net = Network.query.filter_by(network_id=network_id).one()
-            if net is None:
-                if update_message:
-                    self.db_message['network-error'] = "Network "+network_id+" Not Deleted"
-                    self.db_message['network-code'] = 400
-                    self.debug( "Error: Network "+network_id+" Not Deleted" )
-            else:
-                # Delete all objects
-                objects = Object.query.filter_by(
-                    network_id=network_id).all()
-                for obj in objects:
-                    self.deleteObject((network_id,obj.object_id),None,at,False)                                                 
+            # Delete all objects
+            statement = select(['*']).\
+                where( Object.network_id == network_id )
+            # Execute query
+            result = self.engine.execute( statement )
+            objects = result.fetchall()
+            result.close()
+            # Delete each object
+            for obj in objects:
+                self.deleteObject((network_id,obj.object_id),None,[net,obj],at,False)                                                 
 
-                # Delete network
-                self.db.session.delete(net)
-                self.db.session.commit()
-                
-                deleted = True
-                if update_message:
-                    self.db_message['network-message'] =\
-                        "Network "+network_id+" Deleted"
-                    self.db_message['network-code'] = 200
-                self.debug( "Network "+network_id+" Deleted" )
+            # Delete network
+            statement = Network.__table__.delete().\
+                where( Network.network_id == network_id )
+            # Make request
+            self.engine.execute( statement ).close()
+            
+            deleted = True
+            if update_message:
+                self.db_message['network-message'] =\
+                    "Network "+network_id+" Deleted"
+                self.db_message['network-code'] = 200
+            self.debug( "Network "+network_id+" Deleted" )
 
         except OperationalError, err:
             if update_message:
@@ -1353,8 +1253,6 @@ class WallflowerDB:
                 self.db_message['network-code'] = 400
             self.debug( "Error: Network "+network_id+" Not Deleted" )
             self.debug( err )
-            self.db.session.rollback()
-    
         except:
             # There was an error.
             if update_message:
@@ -1369,40 +1267,38 @@ class WallflowerDB:
     Delete object. 
     TODO: It is unnecessary to check for object before deleting
     '''
-    def deleteObject(self,ids,delete_object_request,at,update_message=True):
+    def deleteObject(self,ids,delete_object_request,records,at,update_message=True):
         network_id,object_id = ids
+        net,obj = records
         deleted = False
         
         try:
-            # Check for object
-            obj = Object.query.filter_by(
-                network_id=network_id,
-                object_id=object_id).one()
-            if obj is None:
-                if update_message:
-                    self.db_message['object-error'] = "Object "+network_id+"."+object_id+" Not Deleted"
-                    self.db_message['object-code'] = 400
-                    self.debug( "Error: Object "+network_id+"."+object_id+" Not Deleted" )
-                
-            else:
-                # Delete all streams
-                streams = Stream.query.filter_by(
-                    network_id=network_id,
-                    object_id=object_id).all()
-                for stm in streams:
-                    self.deleteStream((network_id,object_id,stm.stream_id),None,at,False)
-                
-                # Delete object
-                self.db.session.delete(obj)
-                self.db.session.commit()
-                
-                deleted = True
-                if update_message:
-                    self.db_message['object-message'] =\
-                        "Object "+network_id+"."+object_id+" Deleted"
-                    self.db_message['object-code'] = 200
-                self.debug( "Object "+network_id+"."+object_id+" Deleted" )
-    
+            # Delete all streams
+            statement = select(['*']).\
+                where( Stream.network_id == network_id ).\
+                where( Stream.object_id == object_id )
+            # Execute query
+            result = self.engine.execute( statement )
+            streams = result.fetchall()
+            result.close()
+            # Delete each object
+            for stm in streams:
+                self.deleteStream((network_id,object_id,stm.stream_id),None,[net,obj,stm],at,False)
+            
+            # Delete object
+            statement = Object.__table__.delete().\
+                where( Object.network_id == network_id ).\
+                where( Object.object_id == object_id )
+            # Make request
+            self.engine.execute( statement ).close()
+            
+            deleted = True
+            if update_message:
+                self.db_message['object-message'] =\
+                    "Object "+network_id+"."+object_id+" Deleted"
+                self.db_message['object-code'] = 200
+            self.debug( "Object "+network_id+"."+object_id+" Deleted" )
+
         except OperationalError, err:
             if update_message:
                 self.db_message['object-error'] =\
@@ -1410,8 +1306,6 @@ class WallflowerDB:
                 self.db_message['object-code'] = 400
             self.debug( "Error: Object "+network_id+"."+object_id+" Not Deleted" )
             self.debug( err )
-            self.db.session.rollback()
-    
         except:
             # There was an error.
             if update_message:
@@ -1426,48 +1320,43 @@ class WallflowerDB:
     Delete stream. 
     TODO: It is unnecessary to check for stream before deleting
     '''
-    def deleteStream(self,ids,delete_stream_request,at,update_message=True):
+    def deleteStream(self,ids,delete_stream_request,records,at,update_message=True):
         network_id,object_id,stream_id = ids
+        net,obj,stm = records
         deleted = False
         
         try:
-            # Check for stream
-            stm = Stream.query.filter_by(
-                network_id=network_id,
-                object_id=object_id,
-                stream_id=stream_id).one()
-            if stm is None:
-                if update_message:
-                    self.db_message['stream-error'] = \
-                        "Stream "+network_id+"."+object_id+"."+stream_id+" Not Deleted"
-                    self.db_message['stream-code'] = 400
-                    self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Deleted" )
-            else:  
-                # Drop table
-                table_name = network_id+'.'+object_id+'.'+stream_id
-                # Actual type and length not needed to drop/delete table
-                python_type = int
-                points_length = 0
-                
-                # Get SQLAlchemy table as needed
-                points_table = PointsTable( 
-                    table_name, 
-                    python_type, 
-                    points_length
-                )
-                points_table.drop(self.db.engine, checkfirst=True)
-                self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" DB Deleted" )
-                
-                # Delete stream
-                self.db.session.delete(stm)
-                self.db.session.commit()
-                
-                deleted = True
-                if update_message:
-                    self.db_message['stream-message'] =\
-                        "Stream "+network_id+"."+object_id+"."+stream_id+" Deleted"
-                    self.db_message['stream-code'] = 200
-                self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" Deleted" )
+            # Drop table
+            table_name = network_id+'.'+object_id+'.'+stream_id
+            # Actual type and length not needed to drop/delete table
+            python_type = int
+            points_length = 0
+            
+            # Get SQLAlchemy table as needed
+            points_table = getPointsTable( 
+                table_name, 
+                python_type, 
+                points_length
+            )
+            statement = DropTable(points_table)
+            # Make request
+            self.engine.execute( statement ).close()
+            self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" DB Deleted" )
+            
+            # Delete stream
+            statement = Stream.__table__.delete().\
+                where( Stream.network_id == network_id ).\
+                where( Stream.object_id == object_id ).\
+                where( Stream.stream_id == stream_id )
+            # Make request
+            self.engine.execute( statement ).close()
+            
+            deleted = True
+            if update_message:
+                self.db_message['stream-message'] =\
+                    "Stream "+network_id+"."+object_id+"."+stream_id+" Deleted"
+                self.db_message['stream-code'] = 200
+            self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" Deleted" )
                     
         except OperationalError, err:
             if update_message:
@@ -1476,8 +1365,6 @@ class WallflowerDB:
                 self.db_message['stream-code'] = 400
             self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Deleted" )
             self.debug( err )
-            self.db.session.rollback()
-    
         except:
             # There was an error.
             if update_message:
@@ -1491,8 +1378,9 @@ class WallflowerDB:
     '''
     Delete points
     '''
-    def deletePoints(self,ids,delete_points_request,at):
+    def deletePoints(self,ids,delete_points_request,records,at):
         network_id,object_id,stream_id = ids
+        net,obj,stm = records
         deleted = False
         
         try:
@@ -1503,7 +1391,7 @@ class WallflowerDB:
             points_length = 0
             
             # Create SQLAlchemy table as needed
-            points_table = PointsTable( 
+            points_table = getPointsTable( 
                 table_name, 
                 python_type, 
                 points_length
@@ -1533,12 +1421,16 @@ class WallflowerDB:
                 except_statement = select([points_table]).\
                     limit(delete_points_details['except']).\
                     order_by(points_table.c.timestamp.desc())
-                contents = self.db.session.execute(except_statement).fetchall()
-                except_after = contents[-1][0]
-                statement = statement.where( points_table.c.timestamp < except_after )
+                # Execute query
+                result = self.engine.execute( except_statement )
+                contents = result.fetchall()
+                result.close()
+                if len(contents) == delete_points_details['except']:
+                    except_after = contents[-1]['timestamp']
+                    statement = statement.where( points_table.c.timestamp < except_after )
             
-            self.db.session.execute(statement)
-            self.db.session.commit()
+            # Make request
+            self.engine.execute( statement ).close()
             
             deleted = True
             
@@ -1553,8 +1445,6 @@ class WallflowerDB:
             self.db_message['points-code'] = 400
             self.debug( "Error: Points "+network_id+"."+object_id+"."+stream_id+".points Not Deleted" )
             self.debug( err )
-            self.db.session.rollback()
-    
         except:
             # There was an error.
             self.db_message['points-error'] =\
@@ -1642,91 +1532,91 @@ class WallflowerDB:
     '''
     Search points from stream.
     '''
-    def searchPoints(self,ids,search_points_request,at):
+    def searchPoints(self,ids,search_points_request,records,at):
         network_id,object_id,stream_id = ids
+        net,obj,stm = records
         searched = False
         
-        try:
-            # Check for stream
-            stm = Stream.query.filter_by(
-                network_id=network_id,
-                object_id=object_id,
-                stream_id=stream_id).one()
-            if stm is None:
-                # TODO stream-error or points-error
-                self.db_message['stream-error'] = \
-                    "Stream "+network_id+"."+object_id+"."+stream_id+" Not Found"
-                self.db_message['stream-code'] = 400
-                self.debug( "Error: Stream "+network_id+"."+object_id+"."+stream_id+" Not Found" )
-            else:
-                
-                points_details = json.loads( stm.points_details )
-                
-                # Search for points in table
-                table_name = network_id+'.'+object_id+'.'+stream_id
-                python_type = getPythonType( points_details['points-type']  )
-                points_length = points_details['points-length'] 
-                
-                # Get SQLAlchemy table as needed
-                points_table = PointsTable( 
-                    table_name, 
-                    python_type, 
-                    points_length
+        try:                
+            points_details = json.loads( stm.points_details )
+            
+            # Search for points in table
+            table_name = network_id+'.'+object_id+'.'+stream_id
+            python_type = getPythonType( points_details['points-type']  )
+            points_length = points_details['points-length'] 
+            
+            # Get SQLAlchemy table as needed
+            points_table = getPointsTable( 
+                table_name, 
+                python_type, 
+                points_length
+            )
+            
+            # Start search statement
+            statement = select([points_table]).order_by(points_table.c.timestamp.desc())
+            
+            # Expand statement according to details
+            search_points_details = search_points_request['points']
+            if 'start' in search_points_details:
+                start = datetime.datetime.strptime( 
+                    search_points_details['start'], 
+                    self.datetime_format_full
                 )
+                statement = statement.where( points_table.c.timestamp >= start )
+            if 'end' in search_points_details:
+                end = datetime.datetime.strptime( 
+                    search_points_details['end'], 
+                    self.datetime_format_full
+                )
+                statement = statement.where( points_table.c.timestamp <= end )
                 
-                # Start search statement
-                statement = select([points_table]).order_by(points_table.c.timestamp.desc())
-                
-                # Expand statement according to details
-                search_points_details = search_points_request['points']
-                if 'start' in search_points_details:
-                    start = datetime.datetime.strptime( 
-                        search_points_details['start'], 
-                        self.datetime_format_full
-                    )
-                    statement = statement.where( points_table.c.timestamp >= start )
-                if 'end' in search_points_details:
-                    end = datetime.datetime.strptime( 
-                        search_points_details['end'], 
-                        self.datetime_format_full
-                    )
-                    statement = statement.where( points_table.c.timestamp <= end )
-                    
-                limit = 100
-                if 'limit' in search_points_details:
-                    if search_points_details['limit'] < 1000:
-                        limit = search_points_details['limit'] 
-                    else:
-                        limit = 1000
-                statement = statement.limit(limit)
-                
-                contents = self.db.session.execute(statement).fetchall()
-                
-                points = []
-                for point in contents:
-                    if 0 == points_details['points-length']:
-                        points.append({'at':point[0].strftime(self.datetime_format_full),'value':point[1]})
-                    else:
-                        points.append({'at':point[0].strftime(self.datetime_format_full),'value':point[1:]})
-                
-                self.db_message['points-details'] = points_details
-                if len(points) > 1 and isinstance(points[0]['value'],(int,long,float)):
-                    min_val = points[0]['value']
-                    max_val = points[0]['value']
-                    for i in range(1,len(points)):
-                        if points[i]['value'] > max_val:
-                            max_val = points[i]['value']
-                        elif points[i]['value'] < min_val:
-                            min_val = points[i]['value']
-                    self.db_message['points-details']['search-min-value'] = min_val
-                    self.db_message['points-details']['search-max-value'] = max_val
-                
-                searched = True
-                self.db_message['points'] = points
-                self.db_message['points-message'] =\
-                    "Points "+network_id+"."+object_id+"."+stream_id+".points Searched"
-                self.db_message['points-code'] = 200
-                self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Searched" )
+            limit = 100
+            if 'limit' in search_points_details:
+                if search_points_details['limit'] < 1000:
+                    limit = search_points_details['limit'] 
+                else:
+                    limit = 1000
+            statement = statement.limit(limit)
+            
+            
+            # Execute query
+            result = self.engine.execute( statement )
+            points_records = result.fetchall()
+            result.close()
+            
+            points = []
+            for point in points_records:
+                if 0 == points_details['points-length']:
+                    points.append({
+                        'at':point['timestamp'].isoformat() + 'Z',
+                        'value':point['value']
+                    })
+                else:
+                    values = {
+                        'at':point['timestamp'].isoformat() + 'Z'
+                    }
+                    for i in range(points_details['points-length']):
+                        values['value'+str(i)] = point['value'+str(i)]
+                    points.append( values )
+            self.db_message['points'] = points
+            self.db_message['points-details'] = points_details
+            if len(points) > 1 and isinstance(points[0]['value'],(int,long,float)):
+                min_val = points[0]['value']
+                max_val = points[0]['value']
+                for i in range(1,len(points)):
+                    if points[i]['value'] > max_val:
+                        max_val = points[i]['value']
+                    elif points[i]['value'] < min_val:
+                        min_val = points[i]['value']
+                self.db_message['points-details']['search-min-value'] = min_val
+                self.db_message['points-details']['search-max-value'] = max_val
+            
+            searched = True
+            self.db_message['points'] = points
+            self.db_message['points-message'] =\
+                "Points "+network_id+"."+object_id+"."+stream_id+".points Searched"
+            self.db_message['points-code'] = 200
+            self.debug( "Points "+network_id+"."+object_id+"."+stream_id+".points Searched" )
                         
         except OperationalError, err:
             self.db_message['points-error'] =\
@@ -1734,8 +1624,6 @@ class WallflowerDB:
             self.db_message['points-code'] = 400
             self.debug( "Error: Points "+network_id+"."+object_id+"."+stream_id+".points Not Searched" )
             self.debug( err )
-            self.db.session.rollback()
-    
         except:
             # There was an error.
             self.db_message['points-error'] =\
@@ -1808,7 +1696,7 @@ class WallflowerDB:
             return True, stream_record
             '''
             try:
-                contents = self.db.session.execute(select([points_table]).limit(1)).fetchall()
+                # Check for Points Table
 
             except:
                 self.debug( "Stream "+network_id+"."+object_id+"."+stream_id+" DB Not Found" )

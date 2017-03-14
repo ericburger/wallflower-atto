@@ -64,7 +64,7 @@ if config['database']['type'] == 'sqlite':
     atto_db.init( db_uri )
 elif config['database']['type'] == 'postgresql':
     print( "Database Type: PostgreSQL" )
-    db_uri = 'postgres://'+config['database']['user']+':'+config['database']['password']+'@'+config['database']['host']+':'+str(config['database']['port'])+'/'+config['database']['database']
+    db_uri = 'postgres+psycopg2://'+config['database']['user']+':'+config['database']['password']+'@'+config['database']['host']+':'+str(config['database']['port'])+'/'+config['database']['database']
     atto_db.init( db_uri )
 elif config['database']['type'] == 'postgresql-heroku':
     print( "Database Type: Heroku PostgreSQL" )

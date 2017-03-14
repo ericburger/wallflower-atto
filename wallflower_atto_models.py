@@ -135,7 +135,7 @@ class Stream(Base):
         return dict((col, getattr(self, col)) for col in self.__table__.columns.keys())
         
         
-def createPointsTable( table_name, data_type, data_length=0 ):
+def PointsTable( table_name, data_type, data_length=0 ):
     if 0 == data_length:
         if data_type is basestring:
             return Table(table_name, Base.metadata,
@@ -183,4 +183,4 @@ def getPointsTable( table_name, data_type, data_length=0 ):
     if table_name in Base.metadata.tables:
         return Base.metadata.tables[table_name]
     else:
-        return createPointsTable( table_name, data_type, data_length=0 )
+        return PointsTable( table_name, data_type, data_length=0 )

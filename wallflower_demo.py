@@ -79,4 +79,4 @@ while True:
     else:
         print( 'Update test-stream points: error')
         print( response.text )
-    time.sleep(2)
+    time.sleep(1)
